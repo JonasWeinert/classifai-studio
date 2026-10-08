@@ -54,12 +54,22 @@ pub enum Answer {
     Score {
         score: f64,
         confidence: f64,
+        #[serde(default)]
         legend: IndexMap<String, String>,
         probabilities: IndexMap<String, f64>,
     },
     Noul {
         noul: f64,
     },
+}
+
+/// Tokens billed for one request (Ollaya and the TypeSafe wire format report the same shape).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct Usage {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
 }
 
 impl Answer {
@@ -99,6 +109,8 @@ pub struct Routing {
 pub struct DecideResponse {
     pub model: String,
     pub answers: IndexMap<String, Answer>,
+    #[serde(default)]
+    pub usage: Usage,
     #[serde(default)]
     pub routing: Option<Routing>,
     #[serde(default)]
@@ -345,6 +357,7 @@ mod tests {
             "done_reason":"decide","created_at":"x","total_duration":10,"load_duration":0,"eval_duration":5}"#;
         let r: DecideResponse = serde_json::from_str(body).unwrap();
         assert_eq!(r.answers.len(), 2);
+        assert_eq!(r.usage, Usage { input_tokens: 1, output_tokens: 0 });
         assert!((r.answers["department"].top_probability() - 0.85).abs() < 1e-9);
         assert!((r.answers["refund"].top_probability() - 0.91).abs() < 1e-9);
     }

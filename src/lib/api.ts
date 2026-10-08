@@ -1,4 +1,9 @@
 import type {
+  CloudModel,
+  CloudModelInput,
+  Provider,
+  ProviderInput,
+  UsageRow,
   AppError,
   CatalogModel,
   Dataset,
@@ -10,7 +15,7 @@ import type {
   PredictionRow,
   PresetSummary,
   PullEvent,
-  Question,
+  AnyQuestion,
   QuickResult,
   Report,
   Row,
@@ -53,13 +58,21 @@ export const api = {
   modelsCatalog: () => call<CatalogModel[]>("models_catalog"),
   modelPull: (model: string) => call<void>("model_pull", { model }),
   modelDelete: (model: string) => call<void>("model_delete", { model }),
+  providers: () => call<Provider[]>("providers_list"),
+  providerSave: (input: ProviderInput) => call<Provider>("provider_save", { input }),
+  providerDelete: (id: string) => call<void>("provider_delete", { id }),
+  providerTest: (id: string) => call<{ ok: boolean; message: string; latency_ms: number }>("provider_test", { id }),
+  cloudModelSave: (input: CloudModelInput) => call<CloudModel>("cloud_model_save", { input }),
+  cloudModelDelete: (id: string) => call<void>("cloud_model_delete", { id }),
+  usageSummary: (since?: string) => call<UsageRow[]>("usage_summary", { since }),
+  experimentUsage: (id: string) => call<UsageRow[]>("experiment_usage", { id }),
   presets: () => call<PresetSummary[]>("presets_list"),
 
   quickClassify: (req: {
     model: string;
     state: string;
     as_json?: boolean;
-    questions?: Record<string, Question>;
+    questions?: Record<string, AnyQuestion>;
     preset?: string;
   }) => call<QuickResult>("quick_classify", { req }),
 
@@ -77,9 +90,9 @@ export const api = {
   experimentCancel: (id: string) => call<void>("experiment_cancel", { id }),
   experiments: (datasetId?: string) => call<Experiment[]>("experiment_list", { datasetId }),
   experiment: (id: string) => call<Experiment>("experiment_get", { id }),
-  report: (id: string) => call<Report>("experiment_report", { id }),
-  predictions: (id: string, filter: string, offset: number, limit: number) =>
-    call<Page<PredictionRow>>("experiment_predictions", { id, filter, offset, limit }),
+  report: (id: string, question?: string) => call<Report>("experiment_report", { id, question }),
+  predictions: (id: string, question: string | undefined, filter: string, offset: number, limit: number) =>
+    call<Page<PredictionRow>>("experiment_predictions", { id, question, filter, offset, limit }),
   experimentDelete: (id: string) => call<void>("experiment_delete", { id }),
   exportCsv: (id: string, path: string) => call<number>("experiment_export_csv", { id, path }),
 };
@@ -104,4 +117,14 @@ export async function pickSavePath(defaultName: string): Promise<string | null> 
   if (!isTauri) return `/tmp/${defaultName}`;
   const { save } = await import("@tauri-apps/plugin-dialog");
   return save({ defaultPath: defaultName, filters: [{ name: "CSV", extensions: ["csv"] }] });
+}
+
+/** Open a link in the default browser (Tauri) or a new tab (browser preview). */
+export async function openExternal(url: string) {
+  if (!isTauri) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  await openUrl(url);
 }

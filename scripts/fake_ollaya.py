@@ -5,6 +5,15 @@ It speaks the subset of Ollaya's HTTP API that ClassifAI uses (/, /api/version, 
 /api/presets, /api/decide, /api/pull, /api/delete) with deterministic fake answers: a choice
 question picks the label whose name appears in the state, else the first label.
 
+It also fakes the cloud providers, so their base URLs can point here:
+
+    POST /v1/systemone                                         TypeSafe System One (typesafe, custom)
+    POST /v1/decisions                                         OpenAI Decisions (needs a Bearer key)
+    POST /client/v4/accounts/<acct>/ai/run/@cf/cloudflare/<m>  Workers AI, wrapped in {result, success}
+
+Every cloud request reports usage {input_tokens: 10, output_tokens: 0}. An OpenAI question whose
+instructions contain "[refuse]" gets a refusal.
+
     python3 scripts/fake_ollaya.py            # listens on 127.0.0.1:11435
     python3 scripts/fake_ollaya.py 11999      # another port
 """
@@ -33,6 +42,29 @@ def answer(question, state):
         return {"type": "score", "score": (n - 1) / 2, "confidence": 0.0,
                 "legend": {str(i): c for i, c in enumerate(question["criteria"])}, "probabilities": probs}
     return {"type": "noul", "noul": 0.9 if "spam" in text or "win" in text else 0.1}
+
+
+USAGE = {"input_tokens": 10, "output_tokens": 0}
+
+
+def systemone(b):
+    return {"model": b.get("model", ""), "answers": {qid: answer(q, b["state"]) for qid, q in (b.get("questions") or {}).items()},
+            "usage": USAGE}
+
+
+def openai_answer(q, state):
+    name, t = q["name"], q["type"]
+    if "[refuse]" in (q.get("instructions") or ""):
+        return {"type": "refusal", "name": name, "refusal": "I can't help with that."}
+    if t == "predicate":
+        return {"type": "predicate", "name": name, "probability": answer({"type": "noul"}, state)["noul"]}
+    if t == "choice":
+        a = answer({"type": "choice", "criteria": [c["value"] for c in q["choices"]]}, state)
+        return {"type": "choice", "name": name, "choice": a["choice"], "confidence": a["confidence"],
+                "probabilities": [{"value": v, "probability": p} for v, p in a["probabilities"].items()]}
+    a = answer({"type": "score", "criteria": [l["label"] for l in q["levels"]]}, state)
+    return {"type": "score", "name": name, "score": a["score"], "confidence": a["confidence"],
+            "probabilities": [{"value": int(i), "label": a["legend"][i], "probability": p} for i, p in a["probabilities"].items()]}
 
 
 class H(BaseHTTPRequestHandler):
@@ -87,6 +119,21 @@ class H(BaseHTTPRequestHandler):
             self._json(200, {"model": name, "answers": answers, "usage": {"input_tokens": 10, "output_tokens": 0}, "routing": None,
                              "state_truncated": False, "done_reason": "decide", "created_at": "", "total_duration": 2_000_000,
                              "load_duration": 0, "eval_duration": 1_500_000})
+        elif self.path == "/v1/systemone":
+            self._json(200, systemone(b))
+        elif self.path == "/v1/decisions":
+            if not self.headers.get("Authorization", "").startswith("Bearer "):
+                return self._json(401, {"error": {"message": "Missing API key", "type": "invalid_request_error", "code": "invalid_api_key"}})
+            self._json(200, {"id": "dec_fake", "model": b.get("model", ""),
+                             "answers": [openai_answer(q, b["input"]) for q in b.get("questions", [])],
+                             "usage": dict(USAGE, total_tokens=USAGE["input_tokens"])})
+        elif self.path.startswith("/client/v4/accounts/") and "/ai/run/@cf/cloudflare/" in self.path:
+            if not self.headers.get("Authorization", "").startswith("Bearer "):
+                return self._json(401, {"result": None, "success": False, "errors": [{"code": 10000, "message": "Authentication error"}], "messages": []})
+            model = self.path.rsplit("/", 1)[1]
+            if model not in ("clef", "clef-flash") or b.get("model") != model:
+                return self._json(400, {"result": None, "success": False, "errors": [{"code": 5007, "message": f"No such model {model}"}], "messages": []})
+            self._json(200, {"result": systemone(b), "success": True, "errors": [], "messages": []})
         elif self.path == "/api/pull":
             name = b["model"] if ":" in b["model"] else b["model"] + ":latest"
             self.send_response(200)

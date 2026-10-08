@@ -58,7 +58,8 @@ in this version.
 | ID | Requirement |
 |---|---|
 | Q1 | Input as plain text, or JSON (sent as an object `state`) |
-| Q2 | Question modes: **Labels** (`choice` with optional descriptions), **Yes/No** (`noul`), **Scale** (`score`, 2–10 levels), **Preset** (Ollaya built-in or custom presets) |
+| Q1b | **Several questions per check**, answered in one pass; optional shared context and per-question context; descriptions for every option, each scale level and yes/no meanings. |
+| Q2 | Question types: **Pick one** (`choice`), **Yes/No** (`noul`), **Scale** (`score`, 2–10 levels), **Preset** (Ollaya presets), plus extended types built in `classifai-core/questions.rs` from those primitives: **Pick any** (one `noul` per option, threshold), **Rank** (a `choice`, options ordered by probability), **Estimate a number** (`score` over ≤ 10 candidate values, else `choice`; expected value, most likely value, central 80% range) |
 | Q3 | Run on N models, one after another; each result appears as it arrives (answer, confidence, probability bars, latency, load time, router target) |
 | Q4 | Consensus banner: whether the models agree |
 | Q5 | ⌘↩ runs the check |
@@ -74,8 +75,8 @@ in this version.
 ### 4.5 Experiments
 | ID | Requirement | Acceptance |
 |---|---|---|
-| X1 | Configure: dataset, **ground-truth column**, **input column(s)** (one → string state, several → JSON object state), task kind (pick-one / yes-no), instructions, labels (auto-detected values, include/exclude, optional description each), positive label for yes/no, models, sample size, name | Validation blocks a bad config with a clear reason |
-| X2 | Only rows whose trimmed ground truth is an included label are eligible. The sample is a **deterministic** random subset, so reruns are comparable | |
+| X1 | Configure: dataset, **input column(s)** (one → string state, several → JSON object state), optional **shared context**, and **1–64 questions**, each bound to its own **ground-truth column** with kind (pick-one / yes-no), instructions, optional per-question context, labels (auto-detected, include/exclude, optional description each) and positive label for yes/no; models, sample size, name. All questions are asked in **one request per row and model**. | Validation blocks a bad config with a clear reason |
+| X2 | A row is eligible if at least one question has a valid ground truth for it (trimmed value ∈ included labels); each question is scored only on its own valid rows. The sample is a **deterministic** random subset, so reruns are comparable | |
 | X3 | Run in the background: each model is loaded once, then rows run with 4 concurrent requests; predictions are persisted as they arrive | The UI stays responsive; progress per model |
 | X4 | Cancel; **resume** skips rows that already have predictions; experiments interrupted by quitting the app are marked "Stopped" on the next launch | |
 | X5 | A model that fails to load records an error for each of its rows; the other models continue | |
@@ -90,6 +91,15 @@ in this version.
 | R5 | Prediction explorer with filters: any wrong / wrong by a chosen model / disagreements / all; paginated; expand the input |
 | R6 | Export a CSV: row, input, ground truth, and per model the prediction, confidence and correctness |
 | R7 | Metrics refresh live while an experiment runs |
+
+### 4.6b Cloud models
+| ID | Requirement |
+|---|---|
+| C1 | Built-in providers: **TypeSafe Jev** (`api.typesafe.ai/v1/systemone`), **OpenAI Decisions** (`/v1/decisions`, translated to/from the TypeSafe shape; refusals surfaced per question), **Cloudflare Workers AI** (Clef, Clef-Flash; account-scoped URL); plus any number of **custom TypeSafe-compatible endpoints** (OpenRouter, Vercel AI Gateway, remote Ollaya). |
+| C2 | Cloud model ids are `@{provider}/{model}` and work everywhere a model name does (quick check, experiments, CLI). |
+| C3 | Connect a provider from Models → Cloud: API key (macOS Keychain, never the DB), Cloudflare account id, base URL for custom endpoints; **Test** sends one tiny request. |
+| C4 | Each model has editable **input/output prices per 1M tokens** (defaults from the providers' published prices, Oct 2026) and an enable switch; users can add models to any provider. |
+| C5 | Every request logs tokens and estimated cost (`usage_log`); Models → Usage & cost shows spend per model for 7/30 days/all; the experiment leaderboard shows cost per model and per 1k rows. |
 
 ### 4.7 Fine-tune (mockup)
 | ID | Requirement |

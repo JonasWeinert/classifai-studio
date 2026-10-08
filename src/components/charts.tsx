@@ -3,7 +3,7 @@ import type { CalibrationBin } from "../lib/types";
 import { pct } from "../lib/format";
 
 /** Horizontal probability bars, highest first, with the winner highlighted. */
-export function ProbBars({ probs, highlight, color = "var(--accent)", max = 8, legend }: { probs: Record<string, number>; highlight?: string; color?: string; max?: number; legend?: Record<string, string> }) {
+export function ProbBars({ probs, highlight, color = "var(--primary)", max = 8, legend }: { probs: Record<string, number>; highlight?: string; color?: string; max?: number; legend?: Record<string, string> }) {
   const entries = Object.entries(probs).sort((a, b) => b[1] - a[1]);
   const shown = entries.slice(0, max);
   return (
@@ -12,14 +12,14 @@ export function ProbBars({ probs, highlight, color = "var(--accent)", max = 8, l
         const win = k === highlight;
         return (
           <div key={k} className="grid grid-cols-[minmax(0,9rem)_1fr_3.2rem] items-center gap-2.5 text-[12.5px]">
-            <div className={clsx("truncate", win ? "font-semibold text-fg" : "text-muted")} title={legend?.[k] ?? k}>
+            <div className={clsx("truncate", win ? "font-semibold text-foreground" : "text-muted-foreground")} title={legend?.[k] ?? k}>
               {legend ? <span className="mr-1 font-mono text-faint">{k}</span> : null}
               {legend?.[k] ?? k}
             </div>
-            <div className="h-2 overflow-hidden rounded-full bg-panel-2">
-              <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${v * 100}%`, background: win ? color : "var(--line-strong)" }} />
+            <div className="h-2 overflow-hidden rounded-full bg-card">
+              <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${v * 100}%`, background: win ? color : "var(--border-strong)" }} />
             </div>
-            <div className={clsx("text-right font-mono text-[11.5px] tnum", win ? "text-fg" : "text-faint")}>{pct(v, 1)}</div>
+            <div className={clsx("text-right font-mono text-[11.5px] tnum", win ? "text-foreground" : "text-faint")}>{pct(v, 1)}</div>
           </div>
         );
       })}
@@ -44,14 +44,14 @@ export function ConfusionMatrix({ labels, matrix, color = "#7c5cff" }: { labels:
         <div className="flex">
           <div style={{ width: 110 }} />
           {labels.map((l) => (
-            <div key={l} className="truncate px-0.5 pb-1 text-center text-[11px] text-muted" style={{ width: cell }} title={l}>
+            <div key={l} className="truncate px-0.5 pb-1 text-center text-[11px] text-muted-foreground" style={{ width: cell }} title={l}>
               {labels.length > 8 ? l.slice(0, 3) : l}
             </div>
           ))}
         </div>
         {labels.map((gt, i) => (
           <div key={gt} className="flex items-center">
-            <div className="truncate pr-2 text-right text-[11.5px] text-muted" style={{ width: 110 }} title={gt}>
+            <div className="truncate pr-2 text-right text-[11.5px] text-muted-foreground" style={{ width: 110 }} title={gt}>
               {gt}
             </div>
             {labels.map((p, j) => {
@@ -65,8 +65,8 @@ export function ConfusionMatrix({ labels, matrix, color = "#7c5cff" }: { labels:
                   style={{
                     width: cell - 2,
                     height: cell - 2,
-                    background: n === 0 ? "var(--panel-2)" : diag ? `color-mix(in srgb, ${color} ${15 + share * 85}%, transparent)` : `color-mix(in srgb, var(--bad) ${10 + share * 70}%, transparent)`,
-                    color: share > 0.55 ? "#fff" : n === 0 ? "var(--faint)" : "var(--fg)",
+                    background: n === 0 ? "var(--card)" : diag ? `color-mix(in srgb, ${color} ${15 + share * 85}%, transparent)` : `color-mix(in srgb, var(--bad) ${10 + share * 70}%, transparent)`,
+                    color: share > 0.55 ? "#fff" : n === 0 ? "var(--faint)" : "var(--foreground)",
                   }}
                   title={`${gt} → ${p}: ${n} (${pct(share)})`}
                 >
@@ -95,9 +95,9 @@ export function Reliability({ bins, color = "#7c5cff", size = 180 }: { bins: Cal
   const total = bins.reduce((a, b) => a + b.count, 0) || 1;
   return (
     <svg width={w} height={h + 4} className="overflow-visible">
-      <rect x={pad} y={0} width={inner} height={inner} fill="var(--panel-2)" rx={4} />
+      <rect x={pad} y={0} width={inner} height={inner} fill="var(--card)" rx={4} />
       {[0.25, 0.5, 0.75].map((t) => (
-        <line key={t} x1={pad} x2={pad + inner} y1={inner * (1 - t)} y2={inner * (1 - t)} stroke="var(--line)" />
+        <line key={t} x1={pad} x2={pad + inner} y1={inner * (1 - t)} y2={inner * (1 - t)} stroke="var(--border)" />
       ))}
       {bins.map((b, i) => {
         if (!b.count) return null;
@@ -110,7 +110,7 @@ export function Reliability({ bins, color = "#7c5cff", size = 180 }: { bins: Cal
           </rect>
         );
       })}
-      <line x1={pad} y1={inner} x2={pad + inner} y2={0} stroke="var(--fg)" strokeDasharray="3 3" opacity={0.35} />
+      <line x1={pad} y1={inner} x2={pad + inner} y2={0} stroke="var(--foreground)" strokeDasharray="3 3" opacity={0.35} />
       <text x={pad} y={inner + 14} fontSize={10} fill="var(--faint)">0</text>
       <text x={pad + inner} y={inner + 14} fontSize={10} fill="var(--faint)" textAnchor="end">confidence 1</text>
       <text x={pad - 5} y={8} fontSize={10} fill="var(--faint)" textAnchor="end">1</text>
@@ -131,10 +131,10 @@ export function MetricBars({ items, format, higherIsBetter = true }: { items: { 
             <span className="size-2 shrink-0 rounded-full" style={{ background: it.color }} />
             <span className="truncate">{it.label}</span>
           </div>
-          <div className="h-5 overflow-hidden rounded-md bg-panel-2">
+          <div className="h-5 overflow-hidden rounded-md bg-card">
             <div className="h-full rounded-md transition-[width] duration-500" style={{ width: `${(it.value / max) * 100}%`, background: it.color, opacity: it.value === best ? 1 : 0.55 }} />
           </div>
-          <div className={clsx("text-right font-mono text-[12px] tnum", it.value === best ? "font-semibold text-fg" : "text-muted")}>{format(it.value)}</div>
+          <div className={clsx("text-right font-mono text-[12px] tnum", it.value === best ? "font-semibold text-foreground" : "text-muted-foreground")}>{format(it.value)}</div>
         </div>
       ))}
     </div>
@@ -150,10 +150,10 @@ export function Distribution({ items, total }: { items: { value: string; count: 
           <div className="truncate" title={it.value}>
             {it.value || <span className="italic text-faint">(empty)</span>}
           </div>
-          <div className="h-1.5 overflow-hidden rounded-full bg-panel-2">
-            <div className="h-full rounded-full bg-accent/70" style={{ width: `${(it.count / total) * 100}%` }} />
+          <div className="h-1.5 overflow-hidden rounded-full bg-card">
+            <div className="h-full rounded-full bg-primary/70" style={{ width: `${(it.count / total) * 100}%` }} />
           </div>
-          <div className="text-right font-mono text-[11.5px] text-muted tnum">{it.count}</div>
+          <div className="text-right font-mono text-[11.5px] text-muted-foreground tnum">{it.count}</div>
         </div>
       ))}
     </div>

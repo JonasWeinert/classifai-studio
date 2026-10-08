@@ -1,0 +1,101 @@
+id,date,merchant,description,amount,currency,category,recurring
+T1032,2026-08-01,iCloud,APPLE.COM/BILL iCloud+ 200GB,-2.99,EUR,software,yes
+T1037,2026-08-01,Netflix,NETFLIX.COM monthly subscription,-17.89,EUR,entertainment,yes
+T1073,2026-08-01,1Password,1PASSWORD.COM families,-4.99,EUR,software,yes
+T1074,2026-08-01,Stadtwerke,STADTWERKE Strom Abschlag,-103.13,EUR,utilities,yes
+T1078,2026-08-01,Hausverwaltung Müller,MIETE Wohnung Okt,-1150.00,EUR,rent,yes
+T1079,2026-08-01,GitHub,GITHUB.COM Copilot Pro,-10.00,EUR,software,yes
+T1018,2026-08-03,Telekom,TELEKOM DSL Festnetz,-44.95,EUR,utilities,yes
+T1053,2026-08-03,Allianz,ALLIANZ Haftpflicht Beitrag,-7.50,EUR,insurance,yes
+T1061,2026-08-03,ChatGPT,OPENAI *CHATGPT SUBSCR,-20.00,EUR,software,yes
+T1065,2026-08-03,Spotify,SPOTIFY P1A2B3 Premium Family,-14.65,EUR,entertainment,yes
+T1088,2026-08-03,Lieferando,LIEFERANDO.DE order,-41.71,EUR,dining,no
+T1007,2026-08-05,Disney+,DISNEYPLUS.COM subscription,-10.00,EUR,entertainment,yes
+T1012,2026-08-05,BVG,BVG Deutschlandticket,-58.00,EUR,transport,yes
+T1063,2026-08-05,Apotheke,APOTHEKE am Markt,-9.58,EUR,health_fitness,no
+T1030,2026-08-06,Restaurant Sapori,SUMUP *SAPORI TRATTORIA,-72.11,EUR,dining,no
+T1071,2026-08-06,Rossmann,ROSSMANN 2241,-28.57,EUR,personal_care,no
+T1001,2026-08-07,Uber,UBER *TRIP,-20.75,EUR,transport,no
+T1040,2026-08-12,dm,DM DROGERIEMARKT,-27.66,EUR,personal_care,no
+T1058,2026-08-12,Zalando,ZALANDO SE order,-139.20,EUR,shopping,no
+T1064,2026-08-15,Adobe,ADOBE *CREATIVE CLOUD,-59.99,EUR,software,yes
+T1086,2026-08-15,Zalando,ZALANDO SE order,-41.73,EUR,shopping,no
+T1095,2026-08-15,Vodafone,VODAFONE mobile contract,-35.07,EUR,utilities,yes
+T1051,2026-08-17,Starbucks,STARBUCKS 0451,-4.67,EUR,dining,no
+T1062,2026-08-17,Steam,STEAM PURCHASE,-28.13,EUR,entertainment,no
+T1083,2026-08-18,Edeka,EDEKA Center Kreuzberg,-63.24,EUR,groceries,no
+T1036,2026-08-20,Lidl,LIDL DIENSTL. SAGT DANKE,-45.14,EUR,groceries,no
+T1024,2026-08-21,MediaMarkt,MEDIA MARKT Alexanderplatz,-206.59,EUR,shopping,no
+T1070,2026-08-25,MediaMarkt,MEDIA MARKT Alexanderplatz,-281.68,EUR,shopping,no
+T1025,2026-08-26,Wolt,WOLT DE delivery,-21.31,EUR,dining,no
+T1039,2026-08-28,Notion,NOTION LABS Plus plan,-10.00,EUR,software,yes
+T1047,2026-08-28,MediaMarkt,MEDIA MARKT Alexanderplatz,-103.77,EUR,shopping,no
+T1076,2026-08-28,Urban Sports Club,URBAN SPORTS CLUB M,-54.00,EUR,health_fitness,yes
+T1031,2026-09-01,Deutsche Bahn,DB VERTRIEB ICE Ticket,-139.24,EUR,transport,no
+T1038,2026-09-01,TK Krankenkasse,TK Zusatzbeitrag,-19.80,EUR,insurance,yes
+T1069,2026-09-01,Netflix,NETFLIX.COM monthly subscription,-16.87,EUR,entertainment,yes
+T1089,2026-09-01,GitHub,GITHUB.COM Copilot Pro,-10.00,EUR,software,yes
+T1027,2026-09-03,Spotify,SPOTIFY P1A2B3 Premium Family,-13.76,EUR,entertainment,yes
+T1028,2026-09-03,Steam,STEAM PURCHASE,-27.08,EUR,entertainment,no
+T1055,2026-09-03,ChatGPT,OPENAI *CHATGPT SUBSCR,-20.00,EUR,software,yes
+T1016,2026-09-04,Uber,UBER *TRIP,-30.54,EUR,transport,no
+T1054,2026-09-05,Vattenfall,VATTENFALL gas instalment,-64.89,EUR,utilities,yes
+T1099,2026-09-05,Uber,UBER *TRIP,-30.68,EUR,transport,no
+T1006,2026-09-07,Restaurant Sapori,SUMUP *SAPORI TRATTORIA,-39.74,EUR,dining,no
+T1084,2026-09-07,Booking.com,BOOKING.COM hotel,-107.61,EUR,travel,no
+T1048,2026-09-09,Shell,SHELL Tankstelle 88,-50.55,EUR,transport,no
+T1004,2026-09-12,dm,DM DROGERIEMARKT,-39.57,EUR,personal_care,no
+T1013,2026-09-15,McFit,MCFIT membership,-24.90,EUR,health_fitness,yes
+T1019,2026-09-15,Vodafone,VODAFONE mobile contract,-39.09,EUR,utilities,yes
+T1033,2026-09-15,Kino,CINESTAR Ticket,-13.27,EUR,entertainment,no
+T1094,2026-09-16,Lufthansa,LUFTHANSA booking,-311.98,EUR,travel,no
+T1044,2026-09-17,dm,DM DROGERIEMARKT,-27.39,EUR,personal_care,no
+T1060,2026-09-17,Uber,UBER *TRIP,-23.75,EUR,transport,no
+T1052,2026-09-19,Rossmann,ROSSMANN 2241,-10.70,EUR,personal_care,no
+T1072,2026-09-20,Amazon,AMZN Mktp DE*2K4L9,-33.21,EUR,shopping,no
+T1090,2026-09-20,Lufthansa,LUFTHANSA booking,-279.57,EUR,travel,no
+T1091,2026-09-20,Starbucks,STARBUCKS 0451,-8.85,EUR,dining,no
+T1092,2026-09-23,Aldi,ALDI SUED 1234,-34.14,EUR,groceries,no
+T1026,2026-09-24,Booking.com,BOOKING.COM hotel,-383.31,EUR,travel,no
+T1020,2026-09-25,Zalando,ZALANDO SE order,-123.88,EUR,shopping,no
+T1085,2026-09-25,Uber,UBER *TRIP,-15.48,EUR,transport,no
+T1087,2026-09-25,Kino,CINESTAR Ticket,-19.43,EUR,entertainment,no
+T1046,2026-09-28,Edeka,EDEKA Center Kreuzberg,-15.44,EUR,groceries,no
+T1067,2026-09-28,Figma,FIGMA monthly Professional,-15.00,EUR,software,yes
+T1015,2026-10-01,1Password,1PASSWORD.COM families,-4.99,EUR,software,yes
+T1021,2026-10-01,Hausverwaltung Müller,MIETE Wohnung Okt,-1150.00,EUR,rent,yes
+T1029,2026-10-01,TK Krankenkasse,TK Zusatzbeitrag,-19.80,EUR,insurance,yes
+T1035,2026-10-01,iCloud,APPLE.COM/BILL iCloud+ 200GB,-2.99,EUR,software,yes
+T1042,2026-10-01,Stadtwerke,STADTWERKE Strom Abschlag,-88.27,EUR,utilities,yes
+T1057,2026-10-02,Zalando,ZALANDO SE order,-130.10,EUR,shopping,no
+T1014,2026-10-03,Wolt,WOLT DE delivery,-34.39,EUR,dining,no
+T1050,2026-10-03,Allianz,ALLIANZ Haftpflicht Beitrag,-7.50,EUR,insurance,yes
+T1068,2026-10-03,Telekom,TELEKOM DSL Festnetz,-44.95,EUR,utilities,yes
+T1005,2026-10-04,Starbucks,STARBUCKS 0451,-3.94,EUR,dining,no
+T1017,2026-10-05,BVG,BVG Deutschlandticket,-58.00,EUR,transport,yes
+T1034,2026-10-05,Lieferando,LIEFERANDO.DE order,-39.00,EUR,dining,no
+T1045,2026-10-05,Disney+,DISNEYPLUS.COM subscription,-11.24,EUR,entertainment,yes
+T1056,2026-10-05,Vattenfall,VATTENFALL gas instalment,-68.17,EUR,utilities,yes
+T1022,2026-10-06,Steam,STEAM PURCHASE,-15.96,EUR,entertainment,no
+T1098,2026-10-07,Rossmann,ROSSMANN 2241,-32.53,EUR,personal_care,no
+T1097,2026-10-09,JetBrains,JETBRAINS IntelliJ annual license,-169.00,EUR,software,no
+T1075,2026-10-11,Aldi,ALDI SUED 1234,-36.49,EUR,groceries,no
+T1002,2026-10-12,Rossmann,ROSSMANN 2241,-25.16,EUR,personal_care,no
+T1010,2026-10-12,Lidl,LIDL DIENSTL. SAGT DANKE,-64.19,EUR,groceries,no
+T1100,2026-10-13,Deutsche Bahn,DB VERTRIEB ICE Ticket,-75.25,EUR,transport,no
+T1049,2026-10-15,McFit,MCFIT membership,-24.90,EUR,health_fitness,yes
+T1066,2026-10-15,Uber,UBER *TRIP,-8.51,EUR,transport,no
+T1077,2026-10-15,Adobe,ADOBE *CREATIVE CLOUD,-59.99,EUR,software,yes
+T1009,2026-10-16,Deutsche Bahn,DB VERTRIEB ICE Ticket,-122.29,EUR,transport,no
+T1080,2026-10-17,Wolt,WOLT DE delivery,-31.11,EUR,dining,no
+T1093,2026-10-17,Deutsche Bahn,DB VERTRIEB ICE Ticket,-59.77,EUR,transport,no
+T1096,2026-10-17,Lufthansa,LUFTHANSA booking,-209.16,EUR,travel,no
+T1041,2026-10-18,MediaMarkt,MEDIA MARKT Alexanderplatz,-87.04,EUR,shopping,no
+T1008,2026-10-20,Lidl,LIDL DIENSTL. SAGT DANKE,-36.89,EUR,groceries,no
+T1059,2026-10-22,Lieferando,LIEFERANDO.DE order,-41.83,EUR,dining,no
+T1003,2026-10-24,Edeka,EDEKA Center Kreuzberg,-38.54,EUR,groceries,no
+T1043,2026-10-24,Lidl,LIDL DIENSTL. SAGT DANKE,-6.91,EUR,groceries,no
+T1081,2026-10-26,Edeka,EDEKA Center Kreuzberg,-46.66,EUR,groceries,no
+T1011,2026-10-28,Urban Sports Club,URBAN SPORTS CLUB M,-54.00,EUR,health_fitness,yes
+T1023,2026-10-28,Notion,NOTION LABS Plus plan,-10.00,EUR,software,yes
+T1082,2026-10-28,Figma,FIGMA monthly Professional,-15.00,EUR,software,yes

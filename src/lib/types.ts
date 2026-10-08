@@ -16,6 +16,27 @@ export type Answer =
     }
   | { type: "noul"; noul: number };
 
+/** Extended question types, expanded into primitives in classifai-core (questions.rs). */
+export type AnyQuestion =
+  | Question
+  | { type: "multi"; instructions?: string; criteria: Record<string, string | null>; threshold?: number }
+  | { type: "rank"; instructions?: string; criteria: Record<string, string | null> }
+  | { type: "number"; instructions?: string; values: number[]; unit?: string | null };
+
+export type AnyAnswer =
+  | Answer
+  | { type: "multi"; selected: string[]; threshold: number; probabilities: Record<string, number> }
+  | { type: "rank"; ranking: string[]; confidence: number; probabilities: Record<string, number> }
+  | {
+      type: "number";
+      estimate: number;
+      most_likely: number;
+      range: [number, number];
+      unit: string | null;
+      confidence: number;
+      probabilities: Record<string, number>;
+    };
+
 export interface EngineStatus {
   installed: boolean;
   binary_path: string | null;
@@ -45,6 +66,60 @@ export interface CatalogModel {
   tags: string[];
 }
 
+export type ProviderKind = "typesafe" | "openai" | "cloudflare" | "custom";
+
+/** A hosted decision model. `id` is "@{provider}/{model}" and is used wherever a model name is. */
+export interface CloudModel {
+  id: string;
+  provider_id: string;
+  model: string;
+  display_name: string;
+  description: string;
+  input_price_per_mtok: number;
+  output_price_per_mtok: number;
+  enabled: boolean;
+  builtin: boolean;
+}
+
+export interface Provider {
+  id: string;
+  kind: ProviderKind;
+  name: string;
+  base_url: string | null;
+  account_id: string | null;
+  has_key: boolean;
+  key_hint: string | null;
+  builtin: boolean;
+  models: CloudModel[];
+}
+
+export interface ProviderInput {
+  id?: string | null;
+  kind: ProviderKind;
+  name: string;
+  base_url?: string | null;
+  account_id?: string | null;
+  /** undefined/null = keep, "" = delete, otherwise store in the keychain */
+  api_key?: string | null;
+}
+
+export interface CloudModelInput {
+  provider_id: string;
+  model: string;
+  display_name?: string | null;
+  input_price_per_mtok: number;
+  output_price_per_mtok: number;
+  enabled: boolean;
+}
+
+export interface UsageRow {
+  model: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+}
+
 export interface PullEvent {
   model: string;
   status: string;
@@ -64,11 +139,14 @@ export interface PresetSummary {
 export interface QuickResult {
   model: string;
   answered_by: string;
-  answers: Record<string, Answer>;
+  answers: Record<string, AnyAnswer>;
   routing: { router: string; model: string; route: string; reason: string } | null;
   latency_ms: number;
   load_ms: number;
   state_truncated: boolean;
+  usage?: { input_tokens: number; output_tokens: number };
+  cost_usd?: number;
+  refused?: string[];
 }
 
 export interface Dataset {
@@ -95,9 +173,12 @@ export interface LabelSpec {
 }
 
 export interface TaskSpec {
+  /** Question id, unique within the experiment (also the Ollaya question key). */
+  id: string;
   kind: TaskKind;
   instructions: string;
-  input_columns: string[];
+  /** Extra context for this question, appended to its instructions. */
+  context?: string | null;
   label_column: string;
   labels: LabelSpec[];
   positive_label?: string | null;
@@ -107,7 +188,10 @@ export interface TaskSpec {
 export interface ExperimentConfig {
   name: string;
   dataset_id: string;
-  task: TaskSpec;
+  input_columns: string[];
+  /** Context shared by every question. */
+  context?: string | null;
+  tasks: TaskSpec[];
   models: string[];
   sample_size?: number | null;
   concurrency?: number | null;
@@ -174,6 +258,7 @@ export interface ModelMetrics {
 }
 
 export interface Report {
+  question_id: string;
   labels: string[];
   models: ModelMetrics[];
   agreement: number[][];

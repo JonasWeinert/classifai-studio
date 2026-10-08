@@ -1,5 +1,8 @@
-import clsx from "clsx";
+import { AnimatedToastStack } from "@/components/motion/animated-toast-stack";
+import { cn } from "@/lib/utils";
+import { ToolbarContext } from "./lib/toolbar";
 import { useEffect, useState } from "react";
+import { isTauri } from "./lib/api";
 import { Sidebar } from "./components/Sidebar";
 import { useApp } from "./lib/app";
 import { DatasetDetail } from "./pages/DatasetDetail";
@@ -44,53 +47,61 @@ function useTheme() {
   return { dark, toggle };
 }
 
+if (isTauri) document.documentElement.classList.add("tauri");
+
+function routeKey(r: ReturnType<typeof useApp>["route"]) {
+  return "id" in r ? `${r.page}:${r.id}` : r.page;
+}
+
 export default function App() {
-  const { route, engine, models, toasts } = useApp();
+  const { route, engine, models, cloudModels, toasts, dismissToast } = useApp();
   const { dark, toggle } = useTheme();
   const [skipOnboarding, setSkip] = useState(false);
+  const [toolbar, setToolbar] = useState<HTMLDivElement | null>(null);
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => setScrolled(false), [route]);
 
-  // First launch: engine missing or no models yet.
-  const needsOnboarding = engine !== null && (!engine.installed || !engine.running || models.length === 0) && !skipOnboarding;
+  // First launch: no usable model yet — neither a running local engine with a model, nor a connected cloud model.
+  const hasLocal = !!engine?.installed && !!engine.running && models.length > 0;
+  const needsOnboarding = engine !== null && !hasLocal && cloudModels.length === 0 && !skipOnboarding;
 
   if (engine === null) {
     return <div className="h-full titlebar" data-tauri-drag-region />;
   }
-  if (needsOnboarding && route.page !== "engine") {
+  if (needsOnboarding && route.page !== "engine" && route.page !== "models") {
     return <Onboarding onSkip={() => setSkip(true)} />;
   }
 
   return (
     <div className="flex h-full">
       <Sidebar dark={dark} toggleDark={toggle} />
-      <main id="main-scroll" className="relative flex-1 overflow-y-auto">
-        <div className="titlebar sticky top-0 z-20 h-[28px]" data-tauri-drag-region />
-        <div className="mx-auto max-w-[1180px] px-9 pb-16 pt-4">
-          {route.page === "quick" && <QuickCheck />}
-          {route.page === "datasets" && <Datasets />}
-          {route.page === "dataset" && <DatasetDetail id={route.id} />}
-          {route.page === "new-experiment" && <NewExperiment datasetId={route.datasetId} />}
-          {route.page === "experiments" && <Experiments />}
-          {route.page === "experiment" && <ExperimentDetail id={route.id} />}
-          {route.page === "models" && <Models />}
-          {route.page === "finetune" && <FineTune />}
-          {route.page === "engine" && <EnginePage />}
+      <main className="relative flex min-w-0 flex-1 flex-col bg-background">
+        {/* Unified toolbar: page title and actions share the bar with the window's drag area. */}
+        <div
+          ref={setToolbar}
+          data-tauri-drag-region
+          className={cn(
+            "titlebar relative z-30 flex h-[52px] shrink-0 items-center gap-4 border-b px-6 transition-colors duration-200",
+            scrolled ? "border-border bg-background/80 backdrop-blur-xl" : "border-transparent bg-background",
+          )}
+        />
+        <div id="main-scroll" className="min-h-0 flex-1 overflow-y-auto" onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 4)}>
+          <ToolbarContext.Provider value={toolbar}>
+            <div key={routeKey(route)} className="page-in mx-auto max-w-[1160px] px-8 pb-16 pt-6">
+              {route.page === "quick" && <QuickCheck />}
+              {route.page === "datasets" && <Datasets />}
+              {route.page === "dataset" && <DatasetDetail id={route.id} />}
+              {route.page === "new-experiment" && <NewExperiment datasetId={route.datasetId} />}
+              {route.page === "experiments" && <Experiments />}
+              {route.page === "experiment" && <ExperimentDetail id={route.id} />}
+              {route.page === "models" && <Models />}
+              {route.page === "finetune" && <FineTune />}
+              {route.page === "engine" && <EnginePage />}
+            </div>
+          </ToolbarContext.Provider>
         </div>
       </main>
-      <div className="pointer-events-none fixed bottom-5 right-5 z-50 flex flex-col items-end gap-2">
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            className={clsx(
-              "fade-up pointer-events-auto max-w-sm rounded-xl border px-3.5 py-2.5 text-[12.5px] shadow-lg backdrop-blur",
-              t.tone === "good" && "border-good/30 bg-good-soft text-good",
-              t.tone === "bad" && "border-bad/30 bg-bad-soft text-bad",
-              t.tone === "neutral" && "border-line bg-panel text-fg",
-            )}
-          >
-            {t.text}
-          </div>
-        ))}
-      </div>
+      <AnimatedToastStack toasts={toasts} onDismiss={dismissToast} position="bottom-center" fixed />
     </div>
   );
 }

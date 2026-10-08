@@ -48,13 +48,16 @@ pub struct ModelMetrics {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Report {
+    /// The question (task id) these metrics are for.
+    pub question_id: String,
     pub labels: Vec<String>,
     pub models: Vec<ModelMetrics>,
     /// agreement[i][j] = share of rows where models i and j predicted the same label
     pub agreement: Vec<Vec<f64>>,
 }
 
-pub fn report(labels: &[String], models: &[String], predictions: &[Prediction]) -> Report {
+/// Metrics for one question; `predictions` should be that question's only.
+pub fn report(question_id: &str, labels: &[String], models: &[String], predictions: &[Prediction]) -> Report {
     let mut by_model: IndexMap<&str, Vec<&Prediction>> = models.iter().map(|m| (m.as_str(), vec![])).collect();
     for p in predictions {
         by_model.entry(p.model.as_str()).or_default().push(p);
@@ -84,7 +87,7 @@ pub fn report(labels: &[String], models: &[String], predictions: &[Prediction]) 
         })
         .collect();
 
-    Report { labels: labels.to_vec(), models: metrics, agreement }
+    Report { question_id: question_id.to_string(), labels: labels.to_vec(), models: metrics, agreement }
 }
 
 fn model_metrics(model: &str, labels: &[String], ps: &[&Prediction]) -> ModelMetrics {
@@ -219,6 +222,7 @@ mod tests {
         Prediction {
             model: model.into(),
             row_idx: idx,
+            question_id: "q".into(),
             ground_truth: gt.into(),
             predicted: pred.map(Into::into),
             confidence: Some(tp),
@@ -242,7 +246,8 @@ mod tests {
             p("m2", 1, "a", Some("a"), 0.9),
             p("m2", 2, "b", Some("a"), 0.7),
         ];
-        let r = report(&labels, &models, &preds);
+        let r = report("q", &labels, &models, &preds);
+        assert_eq!(r.question_id, "q");
         let m1 = &r.models[0];
         assert_eq!(m1.errors, 1);
         assert!((m1.accuracy - 2.0 / 3.0).abs() < 1e-9);

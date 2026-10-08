@@ -9,7 +9,7 @@ import { bytes } from "../lib/format";
 const STARTER = "laya";
 
 export function Onboarding({ onSkip }: { onSkip: () => void }) {
-  const { engine, refreshEngine, models, pull, pulls, refreshModels } = useApp();
+  const { engine, refreshEngine, models, pull, pulls, refreshModels, go } = useApp();
   const [busy, setBusy] = useState<null | "install" | "start">(null);
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
@@ -51,32 +51,28 @@ export function Onboarding({ onSkip }: { onSkip: () => void }) {
   ];
 
   return (
-    <div className="relative flex h-full flex-col">
+    <div className="relative flex h-full flex-col bg-background">
       <div className="titlebar absolute inset-x-0 top-0 h-12" data-tauri-drag-region />
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute -left-40 -top-40 size-[520px] rounded-full bg-accent/15 blur-3xl" />
-        <div className="absolute -bottom-48 -right-24 size-[520px] rounded-full bg-cyan-400/15 blur-3xl" />
-      </div>
       <div className="relative m-auto w-full max-w-[560px] px-6 fade-up">
-        <img src="/logo.svg" className="size-12" alt="" />
-        <h1 className="mt-5 text-[30px] font-semibold tracking-[-0.03em]">Welcome to ClassifAI</h1>
-        <p className="mt-2 text-[14.5px] leading-relaxed text-muted">
+        <img src="/logo.svg" className="size-14 rounded-[14px] shadow-[0_4px_14px_rgba(0,0,0,.15)]" alt="" />
+        <h1 className="mt-5 text-[26px] font-bold tracking-[-0.025em]">Welcome to ClassifAI</h1>
+        <p className="mt-1.5 text-[13.5px] leading-relaxed text-muted-foreground">
           Classify text with local decision models, measure them against your ground truth and pick the best one. Everything runs on this machine.
         </p>
 
-        <div className="mt-8 space-y-2.5">
+        <div className="mt-7 overflow-hidden rounded-[10px] border border-border bg-background">
           {steps.map((s, i) => {
             const done = step > i;
             const active = step === i;
             return (
-              <div key={i} className={clsx("rounded-xl border bg-panel p-4 transition-all", active ? "border-accent/50 shadow-[0_0_0_4px] shadow-accent/10" : "border-line", !done && !active && "opacity-55")}>
+              <div key={i} className={clsx("border-b border-border p-4 transition-opacity duration-300 last:border-0", !done && !active && "opacity-45")}>
                 <div className="flex items-start gap-3">
-                  <div className={clsx("grid size-8 shrink-0 place-items-center rounded-lg", done ? "bg-good-soft text-good" : active ? "bg-accent text-accent-fg" : "bg-panel-2 text-faint")}>
+                  <div className={clsx("grid size-7 shrink-0 place-items-center rounded-full transition-colors duration-300", done ? "bg-good text-white" : active ? "bg-primary text-primary-foreground" : "bg-sel text-faint")}>
                     {done ? <Check className="size-4" strokeWidth={2.5} /> : s.icon}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="text-[13.5px] font-semibold">{s.title}</div>
-                    <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted">{s.body}</div>
+                    <div className="text-[13px] font-semibold">{s.title}</div>
+                    <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">{s.body}</div>
 
                     {active && i === 0 && (
                       <div className="mt-3 space-y-3">
@@ -84,7 +80,7 @@ export function Onboarding({ onSkip }: { onSkip: () => void }) {
                           Install Ollaya
                         </Button>
                         {log.length > 0 && (
-                          <div ref={logRef} className="max-h-36 overflow-auto rounded-lg bg-[#0d0d12] p-3 font-mono text-[11px] leading-relaxed text-zinc-300" data-selectable>
+                          <div ref={logRef} className="max-h-36 overflow-auto rounded-[6px] bg-card p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground" data-selectable>
                             {log.map((l, k) => (
                               <div key={k}>{l}</div>
                             ))}
@@ -102,7 +98,7 @@ export function Onboarding({ onSkip }: { onSkip: () => void }) {
                         {p ? (
                           <div className="space-y-1.5">
                             <Progress value={p.total ? p.completed / p.total : 0} indeterminate={!p.total} />
-                            <div className="flex justify-between font-mono text-[11px] text-muted">
+                            <div className="flex justify-between font-mono text-[11px] text-muted-foreground">
                               <span>{p.status}</span>
                               <span>{p.total ? `${bytes(p.completed)} / ${bytes(p.total)}` : ""}</span>
                             </div>
@@ -132,6 +128,9 @@ export function Onboarding({ onSkip }: { onSkip: () => void }) {
             <ShieldCheck className="size-3.5" />
             Data never leaves your machine. Weights come from their authors on Hugging Face.
           </div>
+          <Button variant="ghost" size="sm" className="ml-auto" onClick={() => go({ page: "models" })}>
+            Use cloud models instead
+          </Button>
           <Button variant="ghost" size="sm" onClick={onSkip}>
             {step === 3 ? "Continue" : "Skip for now"} <ArrowRight className="size-3.5" />
           </Button>

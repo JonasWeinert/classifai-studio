@@ -1,6 +1,6 @@
 import { Download, Play, RefreshCw, Square, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Badge, Button, Card, CardHeader, ErrorNote, PageHeader } from "../components/ui";
+import { Badge, Button, CardHeader, ErrorNote, PageHeader } from "../components/ui";
 import { api, errorMessage, events } from "../lib/api";
 import { useApp, useAsync } from "../lib/app";
 
@@ -44,8 +44,9 @@ export function EnginePage() {
     <>
       <PageHeader title="Engine" subtitle="ClassifAI uses Ollaya to run decision models locally." />
       {error && <div className="mb-4"><ErrorNote>{error}</ErrorNote></div>}
-      <Card>
+      <div>
         <CardHeader
+          className="px-0 pt-0"
           title="Ollaya"
           actions={
             <>
@@ -75,29 +76,29 @@ export function EnginePage() {
             </>
           }
         />
-        <dl className="border-t border-line">
+        <dl className="border-y border-border">
           {rows.map(([k, v]) => (
-            <div key={k} className="grid grid-cols-[200px_1fr] border-b border-line px-5 py-2.5 text-[13px] last:border-0">
-              <dt className="text-muted">{k}</dt>
+            <div key={k} className="grid grid-cols-[200px_1fr] gap-3 border-b border-border/60 py-2 text-[13px] last:border-0">
+              <dt className="text-right text-muted-foreground">{k}:</dt>
               <dd data-selectable>{v}</dd>
             </div>
           ))}
         </dl>
-      </Card>
+      </div>
 
       {log.length > 0 && (
-        <Card className="mt-5">
-          <CardHeader title={<span className="flex items-center gap-2"><Terminal className="size-3.5" /> Installer output</span>} />
-          <div className="mx-5 mb-5 max-h-64 overflow-auto rounded-lg bg-[#0d0d12] p-3 font-mono text-[11px] leading-relaxed text-zinc-300" data-selectable>
+        <div className="mt-8">
+          <CardHeader className="px-0" title={<span className="flex items-center gap-2"><Terminal className="size-3.5" /> Installer output</span>} />
+          <div className="max-h-64 overflow-auto rounded-[6px] bg-card p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground" data-selectable>
             {log.map((l, i) => (
               <div key={i}>{l}</div>
             ))}
           </div>
-        </Card>
+        </div>
       )}
 
       <div className="mt-5 text-[12px] text-faint">
-        Prefer your own install? ClassifAI uses any Ollaya on PATH or a daemon already listening on <span className="font-mono">127.0.0.1:11435</span> (set <span className="font-mono">OLLAYA_HOST</span> to change). <button className="underline hover:text-fg" onClick={() => go({ page: "models" })}>Manage models →</button>
+        Prefer your own install? ClassifAI uses any Ollaya on PATH or a daemon already listening on <span className="font-mono">127.0.0.1:11435</span> (set <span className="font-mono">OLLAYA_HOST</span> to change). <button className="underline hover:text-foreground" onClick={() => go({ page: "models" })}>Manage models →</button>
       </div>
     </>
   );

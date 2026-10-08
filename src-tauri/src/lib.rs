@@ -4,14 +4,18 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+use classifai_core::decider::Decider;
 use classifai_core::engine::Engine;
 use classifai_core::ollaya::Client;
+use classifai_core::secrets::KeychainSecrets;
 use classifai_core::store::Store;
 use tauri::Manager;
 
 pub struct AppState {
     pub store: Arc<Store>,
     pub engine: Arc<Engine>,
+    /// Local and cloud decisions, providers and API keys (OS keychain).
+    pub decider: Arc<Decider>,
     /// experiment id -> cancel flag of the running task
     pub running: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
@@ -37,10 +41,13 @@ pub fn run() {
                 Some(h) if !h.is_empty() => format!("http://{h}"),
                 _ => classifai_core::ollaya::DEFAULT_BASE_URL.to_string(),
             });
+            let store = Arc::new(store);
+            let decider = Decider::new(client.clone(), store.clone(), Arc::new(KeychainSecrets));
             let engine = Engine::new(&data_dir, client);
             app.manage(AppState {
-                store: Arc::new(store),
+                store,
                 engine: Arc::new(engine),
+                decider: Arc::new(decider),
                 running: Mutex::new(HashMap::new()),
             });
 
@@ -82,6 +89,14 @@ pub fn run() {
             commands::experiment_predictions,
             commands::experiment_delete,
             commands::experiment_export_csv,
+            commands::experiment_usage,
+            commands::providers_list,
+            commands::provider_save,
+            commands::provider_delete,
+            commands::provider_test,
+            commands::cloud_model_save,
+            commands::cloud_model_delete,
+            commands::usage_summary,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

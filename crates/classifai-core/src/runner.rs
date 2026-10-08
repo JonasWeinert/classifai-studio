@@ -1,20 +1,21 @@
-//! Run an experiment: every selected row through every selected model.
+//! Run an experiment: every selected row through every selected model (local or cloud, via the
+//! [`Decider`]), all questions of a row in one request. Usage is logged against the experiment.
 //!
-//! Predictions are written as they arrive, so a cancelled or interrupted experiment keeps what it
-//! has and can be resumed (rows that already have a prediction are skipped).
+//! Predictions (one per question with a ground truth on that row) are written as they arrive, so a
+//! cancelled or interrupted experiment keeps what it has and can be resumed (rows that already have
+//! a prediction for that model are skipped).
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 use futures_util::{stream, StreamExt};
 use serde::Serialize;
 
 use crate::dataset::Row;
-use crate::ollaya::{Client, DecideRequest, Question};
+use crate::decider::{Decider, UsageContext};
+use crate::ollaya::Question;
 use crate::store::{ExperimentConfig, ExperimentStatus, Prediction, Store};
-use crate::task::{TaskSpec, QUESTION_ID};
 use crate::{Error, Result};
 
 pub const DEFAULT_CONCURRENCY: usize = 4;
@@ -29,16 +30,13 @@ pub struct RunEvent {
     pub message: Option<String>,
 }
 
-/// Rows whose ground truth is one of the task's labels, sampled deterministically.
+/// Rows where at least one question's ground truth is one of its labels, sampled deterministically.
 pub fn plan_rows(store: &Store, config: &ExperimentConfig) -> Result<Vec<usize>> {
-    config.task.validate()?;
-    if config.models.is_empty() {
-        return Err(Error::invalid("pick at least one model"));
-    }
+    config.validate()?;
     let rows = store.dataset_rows(&config.dataset_id, 0, i64::MAX as usize)?;
     let mut eligible: Vec<usize> = rows
         .iter()
-        .filter(|(_, r)| config.task.ground_truth(r).is_some())
+        .filter(|(_, r)| config.has_ground_truth(r))
         .map(|(i, _)| *i)
         .collect();
     if eligible.is_empty() {
@@ -59,14 +57,14 @@ pub fn create(store: &Store, config: &ExperimentConfig) -> Result<String> {
 
 pub async fn execute(
     store: Arc<Store>,
-    client: Client,
+    decider: Arc<Decider>,
     experiment_id: String,
     cancel: Arc<AtomicBool>,
     on_event: impl Fn(RunEvent) + Send + Sync,
 ) -> Result<ExperimentStatus> {
     let exp = store.get_experiment(&experiment_id)?;
-    let task = Arc::new(exp.config.task.clone());
-    let questions = task.questions();
+    let config = Arc::new(exp.config.clone());
+    let questions = config.questions();
     let total = exp.row_indices.len();
     let concurrency = exp.config.concurrency.unwrap_or(DEFAULT_CONCURRENCY).clamp(1, 32);
     let rows = store.dataset_rows_by_index(&exp.dataset_id, &exp.row_indices)?;
@@ -94,13 +92,15 @@ pub async fn execute(
             continue;
         }
         emit(Some(model), done, ExperimentStatus::Running, Some(format!("Loading {model}…")));
-        if let Err(e) = client.load(model).await {
+        if let Err(e) = decider.load(model).await {
             let msg = format!("{model} could not be loaded: {e}");
             for (idx, row) in &rows {
                 if existing.contains(&(model.clone(), *idx)) {
                     continue;
                 }
-                store.insert_prediction(&experiment_id, &error_prediction(model, *idx, &task, row, &msg))?;
+                for p in error_predictions(model, *idx, &config, row, &msg) {
+                    store.insert_prediction(&experiment_id, &p)?;
+                }
             }
             emit(Some(model), total, ExperimentStatus::Running, Some(msg));
             continue;
@@ -112,23 +112,26 @@ pub async fn execute(
             rows.iter().filter(|(i, _)| !existing.contains(&(model.clone(), *i))).cloned().collect();
         let mut results = stream::iter(pending)
             .map(|(idx, row)| {
-                let client = client.clone();
+                let decider = decider.clone();
+                let ctx = UsageContext::experiment(experiment_id.clone());
                 let questions = questions.clone();
-                let task = task.clone();
+                let config = config.clone();
                 let model = model.clone();
                 let cancel = cancel.clone();
                 async move {
                     if cancel.load(Ordering::Relaxed) {
                         return None;
                     }
-                    Some(predict(&client, &model, &task, questions, idx, &row).await)
+                    Some(predict(&decider, &ctx, &model, &config, questions, idx, &row).await)
                 }
             })
             .buffer_unordered(concurrency);
 
-        while let Some(p) = results.next().await {
-            let Some(p) = p else { continue };
-            store.insert_prediction(&experiment_id, &p)?;
+        while let Some(ps) = results.next().await {
+            let Some(ps) = ps else { continue };
+            for p in &ps {
+                store.insert_prediction(&experiment_id, p)?;
+            }
             done += 1;
             emit(Some(model), done, ExperimentStatus::Running, None);
         }
@@ -140,58 +143,76 @@ pub async fn execute(
     Ok(status)
 }
 
+/// One request for all questions; one prediction per question with a ground truth on this row.
 async fn predict(
-    client: &Client,
+    decider: &Decider,
+    ctx: &UsageContext,
     model: &str,
-    task: &TaskSpec,
+    config: &ExperimentConfig,
     questions: indexmap::IndexMap<String, Question>,
     idx: usize,
     row: &Row,
-) -> Prediction {
-    let req = DecideRequest {
-        model: model.to_string(),
-        state: Some(task.state(row)),
-        questions: Some(questions),
-        ..Default::default()
+) -> Vec<Prediction> {
+    let resp = match decider.decide(model, config.state(row), questions, ctx).await {
+        Ok(resp) => resp,
+        Err(e) => return error_predictions(model, idx, config, row, &e.to_string()),
     };
-    let started = Instant::now();
-    let gt = task.ground_truth(row).unwrap_or_default();
-    match client.decide(&req).await {
-        Ok(resp) => {
-            let wall = started.elapsed().as_secs_f64() * 1000.0;
-            let latency = if resp.eval_duration > 0 { resp.eval_duration as f64 / 1e6 } else { wall };
-            match resp.answers.get(QUESTION_ID).map(|a| task.interpret(a)) {
+    // Latency is per request, so every question of the row shares it.
+    let latency = resp.latency_ms;
+    config
+        .tasks
+        .iter()
+        .filter_map(|task| {
+            let gt = task.ground_truth(row)?;
+            let base = Prediction {
+                model: model.to_string(),
+                row_idx: idx,
+                question_id: task.id.clone(),
+                ground_truth: gt,
+                predicted: None,
+                confidence: None,
+                top_prob: None,
+                probabilities: None,
+                latency_ms: None,
+                error: None,
+            };
+            Some(match resp.answers.get(&task.id).map(|a| task.interpret(a)) {
                 Some(Ok(i)) => Prediction {
-                    model: model.to_string(),
-                    row_idx: idx,
-                    ground_truth: gt,
                     predicted: Some(i.predicted),
                     confidence: Some(i.confidence),
                     top_prob: Some(i.top_prob),
                     probabilities: Some(i.probabilities),
                     latency_ms: Some(latency),
-                    error: None,
+                    ..base
                 },
-                Some(Err(e)) => error_prediction(model, idx, task, row, &e.to_string()),
-                None => error_prediction(model, idx, task, row, "answer missing from response"),
-            }
-        }
-        Err(e) => error_prediction(model, idx, task, row, &e.to_string()),
-    }
+                Some(Err(e)) => Prediction { error: Some(e.to_string()), ..base },
+                None if resp.refused.contains(&task.id) => Prediction { error: Some("model refused this question".into()), ..base },
+                None => Prediction { error: Some("answer missing from response".into()), ..base },
+            })
+        })
+        .collect()
 }
 
-fn error_prediction(model: &str, idx: usize, task: &TaskSpec, row: &Row, msg: &str) -> Prediction {
-    Prediction {
-        model: model.to_string(),
-        row_idx: idx,
-        ground_truth: task.ground_truth(row).unwrap_or_default(),
-        predicted: None,
-        confidence: None,
-        top_prob: None,
-        probabilities: None,
-        latency_ms: None,
-        error: Some(msg.to_string()),
-    }
+/// The same failure for every question with a ground truth on this row.
+fn error_predictions(model: &str, idx: usize, config: &ExperimentConfig, row: &Row, msg: &str) -> Vec<Prediction> {
+    config
+        .tasks
+        .iter()
+        .filter_map(|task| {
+            Some(Prediction {
+                model: model.to_string(),
+                row_idx: idx,
+                question_id: task.id.clone(),
+                ground_truth: task.ground_truth(row)?,
+                predicted: None,
+                confidence: None,
+                top_prob: None,
+                probabilities: None,
+                latency_ms: None,
+                error: Some(msg.to_string()),
+            })
+        })
+        .collect()
 }
 
 /// Fisher–Yates with xorshift64: stable across platforms and releases.
@@ -209,7 +230,33 @@ fn shuffle<T>(v: &mut [T], seed: u64) {
 mod tests {
     use super::*;
     use crate::dataset::parse_delimited;
-    use crate::task::{LabelSpec, TaskKind};
+    use crate::task::{LabelSpec, TaskKind, TaskSpec};
+
+    fn choice(id: &str, column: &str, labels: &[&str]) -> TaskSpec {
+        TaskSpec {
+            id: id.into(),
+            kind: TaskKind::Choice,
+            instructions: "?".into(),
+            context: None,
+            label_column: column.into(),
+            labels: labels.iter().map(|v| LabelSpec { value: v.to_string(), description: None }).collect(),
+            positive_label: None,
+            threshold: None,
+        }
+    }
+
+    fn config(dataset_id: String, tasks: Vec<TaskSpec>) -> ExperimentConfig {
+        ExperimentConfig {
+            name: "e".into(),
+            dataset_id,
+            input_columns: vec!["text".into()],
+            context: None,
+            tasks,
+            models: vec!["laya".into()],
+            sample_size: None,
+            concurrency: None,
+        }
+    }
 
     #[test]
     fn plan_filters_unknown_labels_and_samples() {
@@ -219,25 +266,7 @@ mod tests {
             csv.push_str(&format!("t{i},{}\n", ["a", "b", "?"][i % 3]));
         }
         let d = store.insert_dataset("x", None, &parse_delimited(&csv, b',').unwrap()).unwrap();
-        let mut cfg = ExperimentConfig {
-            name: "e".into(),
-            dataset_id: d.id,
-            task: TaskSpec {
-                kind: TaskKind::Choice,
-                instructions: "?".into(),
-                input_columns: vec!["text".into()],
-                label_column: "label".into(),
-                labels: vec![
-                    LabelSpec { value: "a".into(), description: None },
-                    LabelSpec { value: "b".into(), description: None },
-                ],
-                positive_label: None,
-                threshold: None,
-            },
-            models: vec!["laya".into()],
-            sample_size: None,
-            concurrency: None,
-        };
+        let mut cfg = config(d.id, vec![choice("label", "label", &["a", "b"])]);
         let all = plan_rows(&store, &cfg).unwrap();
         assert_eq!(all.len(), 34);
         cfg.sample_size = Some(10);
@@ -245,5 +274,26 @@ mod tests {
         assert_eq!(s1.len(), 10);
         assert_eq!(s1, plan_rows(&store, &cfg).unwrap(), "sampling is deterministic");
         assert!(s1.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn plan_keeps_rows_with_any_ground_truth() {
+        let store = Store::open_in_memory().unwrap();
+        let csv = "text,team,urgent\n\
+            r0,billing,yes\n\
+            r1,billing,\n\
+            r2,,no\n\
+            r3,??,maybe\n\
+            r4,account,no\n";
+        let d = store.insert_dataset("x", None, &parse_delimited(csv, b',').unwrap()).unwrap();
+        let team = choice("team", "team", &["billing", "account"]);
+        let urgent = choice("urgent", "urgent", &["yes", "no"]);
+        assert_eq!(plan_rows(&store, &config(d.id.clone(), vec![team.clone()])).unwrap(), vec![0, 1, 4]);
+        assert_eq!(plan_rows(&store, &config(d.id.clone(), vec![urgent.clone()])).unwrap(), vec![0, 2, 4]);
+        assert_eq!(plan_rows(&store, &config(d.id.clone(), vec![team.clone(), urgent.clone()])).unwrap(), vec![0, 1, 2, 4]);
+
+        let mut bad = config(d.id, vec![team, urgent]);
+        bad.input_columns = vec!["text".into(), "urgent".into()];
+        assert!(plan_rows(&store, &bad).is_err(), "a ground-truth column cannot be an input");
     }
 }

@@ -18,3 +18,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 dirs = "6"
+# API keys of cloud providers live in the OS credential store (macOS Keychain, Windows Credential
+# Manager, Secret Service on Linux).
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }

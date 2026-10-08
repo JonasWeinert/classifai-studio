@@ -6,8 +6,10 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
+use classifai_core::decider::{Decider, UsageContext};
 use classifai_core::engine::Engine;
-use classifai_core::ollaya::{Answer, Client, DecideRequest, NoulCriteria, Question, DEFAULT_BASE_URL};
+use classifai_core::ollaya::{Answer, Client, NoulCriteria, Question, DEFAULT_BASE_URL};
+use classifai_core::secrets::KeychainSecrets;
 use classifai_core::store::Store;
 use classifai_core::{eval, runner};
 use indexmap::IndexMap;
@@ -26,14 +28,14 @@ struct Cli {
 enum Cmd {
     /// Show the engine status
     Status,
-    /// List installed models
+    /// List installed models and enabled cloud models
     Models,
     /// Download a model
     Pull { model: String },
     /// Classify one text: `classifai check "text" -m laya -l billing,technical,account`
     Check {
         text: String,
-        /// Model(s) to ask; repeat to compare
+        /// Model(s) to ask; repeat to compare. Cloud models: @provider/model, e.g. @typesafe/jev-latest
         #[arg(short, long = "model", default_value = "laya")]
         models: Vec<String>,
         /// Comma-separated labels (a choice question)
@@ -50,10 +52,16 @@ enum Cmd {
     Datasets,
     /// List experiments
     Experiments,
-    /// Print the leaderboard of an experiment
+    /// Print the leaderboard of an experiment, one per question
     Report { id: String },
     /// Run (or resume) an experiment that was created in the app
     Run { id: String },
+    /// Requests, tokens and cost per model
+    Usage {
+        /// Only usage at or after this RFC 3339 time, e.g. 2026-10-01
+        #[arg(long)]
+        since: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -61,6 +69,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let client = Client::new(normalize_host(&cli.host));
     let data_dir = classifai_core::default_data_dir();
+    let open_store = || -> Result<Arc<Store>> { Ok(Arc::new(Store::open(&data_dir.join(classifai_core::DB_FILE))?)) };
+    let decider = |client: Client, store: Arc<Store>| Arc::new(Decider::new(client, store, Arc::new(KeychainSecrets)));
 
     match cli.cmd {
         Cmd::Status => {
@@ -71,8 +81,26 @@ async fn main() -> Result<()> {
             println!("url        {}", s.base_url);
         }
         Cmd::Models => {
-            for m in client.tags().await? {
-                println!("{:<28} {:>8} {:>10}", m.name, m.details.parameter_size, human_size(m.size));
+            match client.tags().await {
+                Ok(models) => {
+                    for m in models {
+                        println!("{:<28} {:>8} {:>10}", m.name, m.details.parameter_size, human_size(m.size));
+                    }
+                }
+                Err(e) => eprintln!("local models unavailable: {e}"),
+            }
+            let store = open_store()?;
+            for p in store.list_providers()? {
+                for m in store.list_cloud_models(Some(&p.id))?.into_iter().filter(|m| m.enabled) {
+                    let key = if p.has_key || !p.kind.requires_key() { "" } else { "  (no API key)" };
+                    println!(
+                        "{:<28} {:>8} ${:.3}/M in, ${:.3}/M out{key}",
+                        m.id(),
+                        "cloud",
+                        m.input_price_per_mtok,
+                        m.output_price_per_mtok
+                    );
+                }
             }
         }
         Cmd::Pull { model } => {
@@ -103,22 +131,20 @@ async fn main() -> Result<()> {
             };
             let mut questions = IndexMap::new();
             questions.insert("answer".to_string(), question);
+            let decider = decider(client, open_store()?);
             for model in models {
-                let req = DecideRequest {
-                    model: model.clone(),
-                    state: Some(text.clone().into()),
-                    questions: Some(questions.clone()),
-                    ..Default::default()
-                };
-                match client.decide(&req).await {
+                match decider.decide(&model, text.clone().into(), questions.clone(), &UsageContext::quick()).await {
                     Ok(r) => {
-                        let ms = r.eval_duration as f64 / 1e6;
-                        match &r.answers["answer"] {
-                            Answer::Choice { choice, confidence, .. } => {
-                                println!("{:<24} {choice:<20} conf {confidence:.2}  {ms:.0} ms", r.model)
+                        let ms = r.latency_ms;
+                        let cost = if r.cost_usd > 0.0 { format!("  ${:.6}", r.cost_usd) } else { String::new() };
+                        match r.answers.get("answer") {
+                            Some(Answer::Choice { choice, confidence, .. }) => {
+                                println!("{model:<24} {choice:<20} conf {confidence:.2}  {ms:.0} ms{cost}")
                             }
-                            Answer::Noul { noul } => println!("{:<24} p(yes) {noul:.3}  {ms:.0} ms", r.model),
-                            Answer::Score { score, .. } => println!("{:<24} score {score:.2}  {ms:.0} ms", r.model),
+                            Some(Answer::Noul { noul }) => println!("{model:<24} p(yes) {noul:.3}  {ms:.0} ms{cost}"),
+                            Some(Answer::Score { score, .. }) => println!("{model:<24} score {score:.2}  {ms:.0} ms{cost}"),
+                            None if !r.refused.is_empty() => println!("{model:<24} refused to answer"),
+                            None => println!("{model:<24} error: answer missing from response"),
                         }
                     }
                     Err(e) => println!("{model:<24} error: {e}"),
@@ -140,24 +166,43 @@ async fn main() -> Result<()> {
         Cmd::Report { id } => {
             let store = Store::open(&data_dir.join(classifai_core::DB_FILE))?;
             let e = store.get_experiment(&id)?;
-            let r = eval::report(&e.config.task.label_values(), &e.config.models, &store.predictions(&id)?);
-            println!("{:<28} {:>8} {:>8} {:>8} {:>9} {:>6}", "model", "acc", "macroF1", "ECE", "p50 ms", "errors");
-            for m in r.models {
-                println!(
-                    "{:<28} {:>8.3} {:>8.3} {:>8.3} {:>9.1} {:>6}",
-                    m.model, m.accuracy, m.macro_f1, m.ece, m.latency_p50_ms, m.errors
-                );
+            for (i, task) in e.config.tasks.iter().enumerate() {
+                let preds = store.predictions_for(&id, &task.id)?;
+                let r = eval::report(&task.id, &task.label_values(), &e.config.models, &preds);
+                if i > 0 {
+                    println!();
+                }
+                println!("== {} ==", r.question_id);
+                println!("{:<28} {:>8} {:>8} {:>8} {:>9} {:>6}", "model", "acc", "macroF1", "ECE", "p50 ms", "errors");
+                for m in r.models {
+                    println!(
+                        "{:<28} {:>8.3} {:>8.3} {:>8.3} {:>9.1} {:>6}",
+                        m.model, m.accuracy, m.macro_f1, m.ece, m.latency_p50_ms, m.errors
+                    );
+                }
             }
         }
         Cmd::Run { id } => {
-            let store = Arc::new(Store::open(&data_dir.join(classifai_core::DB_FILE))?);
-            let status = runner::execute(store, client, id, Arc::new(AtomicBool::new(false)), |ev| {
+            let store = open_store()?;
+            let status = runner::execute(store.clone(), decider(client, store), id, Arc::new(AtomicBool::new(false)), |ev| {
                 if let Some(m) = &ev.model {
                     eprint!("\r{m:<28} {}/{}", ev.done, ev.total);
                 }
             })
             .await?;
             eprintln!("\n{status:?}");
+        }
+        Cmd::Usage { since } => {
+            let rows = open_store()?.usage_summary(since.as_deref())?;
+            println!("{:<32} {:>9} {:>14} {:>14} {:>12}", "model", "requests", "input tokens", "output tokens", "cost USD");
+            for r in &rows {
+                println!(
+                    "{:<32} {:>9} {:>14} {:>14} {:>12.6}",
+                    r.model, r.requests, r.input_tokens, r.output_tokens, r.cost_usd
+                );
+            }
+            let total: f64 = rows.iter().map(|r| r.cost_usd).sum();
+            println!("{:<32} {:>9} {:>14} {:>14} {:>12.6}", "total", "", "", "", total);
         }
     }
     Ok(())
