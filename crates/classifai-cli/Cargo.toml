@@ -1,0 +1,18 @@
+[package]
+name = "classifai-cli"
+description = "ClassifAI command line (preview)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "classifai"
+path = "src/main.rs"
+
+[dependencies]
+classifai-core.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+anyhow.workspace = true
+clap = { version = "4", features = ["derive", "env"] }

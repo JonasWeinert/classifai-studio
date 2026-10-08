@@ -1,0 +1,151 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+}
+
+:root {
+  --bg: #f6f6f8;
+  --panel: #ffffff;
+  --panel-2: #f1f1f4;
+  --line: #e6e6ec;
+  --line-strong: #d4d4dd;
+  --fg: #16161d;
+  --muted: #5e5e6e;
+  --faint: #9696a6;
+  --accent: #6d4aff;
+  --accent-fg: #ffffff;
+  --accent-soft: #efeaff;
+  --good: #0f9f6e;
+  --good-soft: #e3f6ee;
+  --bad: #e5484d;
+  --bad-soft: #fdecec;
+  --warn: #c27c0e;
+  --warn-soft: #fdf3e1;
+  color-scheme: light;
+}
+
+:root.dark {
+  --bg: #0d0d12;
+  --panel: #15151c;
+  --panel-2: #1c1c25;
+  --line: #262631;
+  --line-strong: #34343f;
+  --fg: #ececf1;
+  --muted: #a0a0b0;
+  --faint: #6b6b7b;
+  --accent: #8b6dff;
+  --accent-fg: #ffffff;
+  --accent-soft: #241d42;
+  --good: #34d399;
+  --good-soft: #0f2a21;
+  --bad: #f87171;
+  --bad-soft: #321718;
+  --warn: #fbbf24;
+  --warn-soft: #2f2410;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv11", "ss01";
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+[data-selectable] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* drag region for the overlay title bar */
+.titlebar {
+  -webkit-app-region: drag;
+}
+.titlebar button,
+.titlebar a,
+.titlebar input {
+  -webkit-app-region: no-drag;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 10px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+.shimmer {
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--accent) 25%, transparent) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.fade-up {
+  animation: fade-up 0.22s ease-out both;
+}

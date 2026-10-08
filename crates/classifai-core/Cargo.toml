@@ -1,0 +1,20 @@
+[package]
+name = "classifai-core"
+description = "Datasets, Ollaya client, experiment runner and metrics shared by the ClassifAI app and CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+thiserror.workspace = true
+csv = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+dirs = "6"
