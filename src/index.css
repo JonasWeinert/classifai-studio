@@ -194,13 +194,9 @@ textarea,
   font-variant-numeric: tabular-nums;
 }
 
+/* .titlebar marks window-drag areas; see src/lib/windowDrag.ts. */
 .titlebar {
-  -webkit-app-region: drag;
-}
-.titlebar button,
-.titlebar a,
-.titlebar input {
-  -webkit-app-region: no-drag;
+  cursor: default;
 }
 
 ::-webkit-scrollbar {

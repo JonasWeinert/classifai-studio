@@ -331,12 +331,12 @@ export function PageHeader({ title, subtitle, actions, back }: { title: ReactNod
           </button>
         </Tooltip>
       )}
-      <div className="min-w-0 flex-1" data-tauri-drag-region>
-        <h1 className="truncate text-[15px] font-semibold leading-tight tracking-[-0.01em]" data-tauri-drag-region>
+      <div className="min-w-0 flex-1">
+        <h1 className="truncate text-[15px] font-semibold leading-tight tracking-[-0.01em]">
           {title}
         </h1>
         {subtitle && (
-          <div className="truncate text-[11.5px] leading-tight text-muted-foreground" data-tauri-drag-region>
+          <div className="truncate text-[11.5px] leading-tight text-muted-foreground">
             {subtitle}
           </div>
         )}

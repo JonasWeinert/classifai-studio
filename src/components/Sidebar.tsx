@@ -52,7 +52,7 @@ export function Sidebar() {
 
   return (
     <aside className="sidebar flex w-[212px] shrink-0 flex-col border-r border-border">
-      <div className="titlebar h-[52px] shrink-0" data-tauri-drag-region />
+      <div className="titlebar h-[52px] shrink-0" />
 
       <button
         onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }))}

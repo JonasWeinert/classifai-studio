@@ -68,7 +68,7 @@ export function Onboarding({ onSkip }: { onSkip: () => void }) {
 
   return (
     <div className="relative flex h-full flex-col bg-background">
-      <div className="titlebar absolute inset-x-0 top-0 h-12" data-tauri-drag-region />
+      <div className="titlebar absolute inset-x-0 top-0 h-12" />
       <div className="relative m-auto w-full max-w-[560px] px-6 fade-up">
         <img src="/logo.svg" className="size-14 rounded-[14px] shadow-[0_4px_14px_rgba(0,0,0,.15)]" alt="" />
         <h1 className="mt-5 text-[26px] font-bold tracking-[-0.025em]">Welcome to ClassifAI</h1>

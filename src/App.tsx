@@ -8,6 +8,7 @@ import { events, isTauri } from "./lib/api";
 import { useApp, type Route } from "./lib/app";
 import { ToolbarContext } from "./lib/toolbar";
 import { useImportDataset } from "./lib/useImportDataset";
+import { installWindowDrag } from "./lib/windowDrag";
 import { Compare } from "./pages/Compare";
 import { DatasetDetail } from "./pages/DatasetDetail";
 import { Datasets } from "./pages/Datasets";
@@ -21,7 +22,10 @@ import { QuickCheck } from "./pages/QuickCheck";
 import { Review } from "./pages/Review";
 import { Settings } from "./pages/Settings";
 
-if (isTauri) document.documentElement.classList.add("tauri");
+if (isTauri) {
+  document.documentElement.classList.add("tauri");
+  installWindowDrag();
+}
 
 function routeKey(r: Route) {
   return "id" in r ? `${r.page}:${r.id}` : r.page;
@@ -132,7 +136,7 @@ export default function App() {
   const needsOnboarding = engine !== null && !hasLocal && cloudModels.length === 0 && !skipOnboarding;
 
   if (engine === null) {
-    return <div className="h-full titlebar" data-tauri-drag-region />;
+    return <div className="h-full titlebar" />;
   }
   if (needsOnboarding && route.page !== "settings" && route.page !== "models") {
     return <Onboarding onSkip={() => setSkip(true)} />;
@@ -145,7 +149,6 @@ export default function App() {
         {/* Unified toolbar: page title and actions share the bar with the window's drag area. */}
         <div
           ref={setToolbar}
-          data-tauri-drag-region
           className={cn(
             "titlebar relative z-30 flex h-[52px] shrink-0 items-center gap-4 border-b px-6 transition-colors duration-200",
             scrolled ? "border-border bg-background/80 backdrop-blur-xl" : "border-transparent bg-background",
