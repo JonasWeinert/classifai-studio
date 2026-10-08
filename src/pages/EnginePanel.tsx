@@ -1,14 +1,15 @@
 import { Download, Play, RefreshCw, Square, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Badge, Button, CardHeader, ErrorNote, PageHeader } from "../components/ui";
-import { api, errorMessage, events } from "../lib/api";
+import { Badge, Button, CardHeader, ErrorNote } from "../components/ui";
+import { api, events } from "../lib/api";
 import { useApp, useAsync } from "../lib/app";
 
-export function EnginePage() {
+/** Engine status and controls; shown under Settings → Engine. */
+export function EnginePanel() {
   const { engine, refreshEngine, refreshModels, go } = useApp();
   const info = useAsync(() => api.appInfo(), []);
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [log, setLog] = useState<string[]>([]);
 
   useEffect(() => {
@@ -22,7 +23,7 @@ export function EnginePage() {
     try {
       await fn();
     } catch (e) {
-      setError(errorMessage(e));
+      setError(e);
     } finally {
       await refreshEngine();
       await refreshModels();
@@ -42,8 +43,7 @@ export function EnginePage() {
 
   return (
     <>
-      <PageHeader title="Engine" subtitle="ClassifAI uses Ollaya to run decision models locally." />
-      {error && <div className="mb-4"><ErrorNote>{error}</ErrorNote></div>}
+      {error !== null && <div className="mb-4"><ErrorNote error={error} /></div>}
       <div>
         <CardHeader
           className="px-0 pt-0"

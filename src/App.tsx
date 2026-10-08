@@ -1,13 +1,16 @@
 import { AnimatedToastStack } from "@/components/motion/animated-toast-stack";
 import { cn } from "@/lib/utils";
-import { ToolbarContext } from "./lib/toolbar";
-import { useEffect, useState } from "react";
-import { isTauri } from "./lib/api";
+import { FileUp } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Palette } from "./components/Palette";
 import { Sidebar } from "./components/Sidebar";
-import { useApp } from "./lib/app";
+import { events, isTauri } from "./lib/api";
+import { useApp, type Route } from "./lib/app";
+import { ToolbarContext } from "./lib/toolbar";
+import { useImportDataset } from "./lib/useImportDataset";
+import { Compare } from "./pages/Compare";
 import { DatasetDetail } from "./pages/DatasetDetail";
 import { Datasets } from "./pages/Datasets";
-import { EnginePage } from "./pages/Engine";
 import { ExperimentDetail } from "./pages/ExperimentDetail";
 import { Experiments } from "./pages/Experiments";
 import { FineTune } from "./pages/FineTune";
@@ -15,51 +18,114 @@ import { Models } from "./pages/Models";
 import { NewExperiment } from "./pages/NewExperiment";
 import { Onboarding } from "./pages/Onboarding";
 import { QuickCheck } from "./pages/QuickCheck";
-
-function useTheme() {
-  const media = window.matchMedia("(prefers-color-scheme: dark)");
-  const [pref, setPref] = useState<"system" | "light" | "dark">(() => {
-    try {
-      return (localStorage.getItem("theme") as "light" | "dark") ?? "system";
-    } catch {
-      return "system";
-    }
-  });
-  const [sysDark, setSysDark] = useState(media.matches);
-  useEffect(() => {
-    const h = (e: MediaQueryListEvent) => setSysDark(e.matches);
-    media.addEventListener("change", h);
-    return () => media.removeEventListener("change", h);
-  }, [media]);
-  const dark = pref === "system" ? sysDark : pref === "dark";
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", dark);
-  }, [dark]);
-  const toggle = () => {
-    const next = dark ? "light" : "dark";
-    setPref(next);
-    try {
-      localStorage.setItem("theme", next);
-    } catch {
-      /* ignore */
-    }
-  };
-  return { dark, toggle };
-}
+import { Review } from "./pages/Review";
+import { Settings } from "./pages/Settings";
 
 if (isTauri) document.documentElement.classList.add("tauri");
 
-function routeKey(r: ReturnType<typeof useApp>["route"]) {
+function routeKey(r: Route) {
   return "id" in r ? `${r.page}:${r.id}` : r.page;
 }
 
+const NAV: Record<string, Route> = {
+  "nav:quick": { page: "quick" },
+  "nav:datasets": { page: "datasets" },
+  "nav:experiments": { page: "experiments" },
+  "nav:models": { page: "models" },
+};
+
+const DATA_FILE = /\.(csv|tsv|json|jsonl|ndjson)$/i;
+
 export default function App() {
-  const { route, engine, models, cloudModels, toasts, dismissToast } = useApp();
-  const { dark, toggle } = useTheme();
+  const { route, go, back, engine, models, cloudModels, toasts, dismissToast } = useApp();
+  const imp = useImportDataset();
   const [skipOnboarding, setSkip] = useState(false);
   const [toolbar, setToolbar] = useState<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [dragging, setDragging] = useState(false);
   useEffect(() => setScrolled(false), [route]);
+
+  // One place for menu items, keyboard shortcuts and palette actions.
+  const runAction = useCallback(
+    (action: string) => {
+      if (NAV[action]) return go(NAV[action]);
+      if (action === "back") return back();
+      if (action === "settings") return go({ page: "settings" });
+      if (action === "new-experiment") return go({ page: "new-experiment" });
+      if (action === "import") return imp.run();
+      if (action === "palette") return setPaletteOpen(true);
+    },
+    [back, go, imp],
+  );
+
+  // Native menu (Tauri) …
+  useEffect(() => {
+    const un = events.menu(runAction);
+    return () => void un.then((f) => f());
+  }, [runAction]);
+
+  // … and the same shortcuts in the browser preview, where there is no native menu.
+  const runRef = useRef(runAction);
+  runRef.current = runAction;
+  useEffect(() => {
+    if (isTauri) return;
+    const keys: Record<string, string> = { "1": "nav:quick", "2": "nav:datasets", "3": "nav:experiments", "4": "nav:models", "[": "back", ",": "settings", n: "new-experiment", o: "import" };
+    const h = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+      const action = keys[e.key.toLowerCase()];
+      if (!action) return;
+      e.preventDefault();
+      runRef.current(action);
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
+
+  // Drop a data file anywhere on the window to import it.
+  useEffect(() => {
+    if (isTauri) {
+      let unlisten: (() => void) | undefined;
+      import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
+        getCurrentWebview()
+          .onDragDropEvent((e) => {
+            const p = e.payload;
+            if (p.type === "enter" || p.type === "over") setDragging(true);
+            else if (p.type === "leave") setDragging(false);
+            else if (p.type === "drop") {
+              setDragging(false);
+              const file = p.paths.find((x) => DATA_FILE.test(x));
+              if (file) imp.importPath(file);
+            }
+          })
+          .then((f) => (unlisten = f)),
+      );
+      return () => unlisten?.();
+    }
+    const over = (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes("Files")) return;
+      e.preventDefault();
+      setDragging(true);
+    };
+    const leave = (e: DragEvent) => {
+      if (e.relatedTarget === null) setDragging(false);
+    };
+    const drop = async (e: DragEvent) => {
+      e.preventDefault();
+      setDragging(false);
+      const file = [...(e.dataTransfer?.files ?? [])].find((f) => DATA_FILE.test(f.name));
+      if (file) imp.importText(file.name.replace(DATA_FILE, ""), await file.text());
+    };
+    window.addEventListener("dragover", over);
+    window.addEventListener("dragleave", leave);
+    window.addEventListener("drop", drop);
+    return () => {
+      window.removeEventListener("dragover", over);
+      window.removeEventListener("dragleave", leave);
+      window.removeEventListener("drop", drop);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // First launch: no usable model yet — neither a running local engine with a model, nor a connected cloud model.
   const hasLocal = !!engine?.installed && !!engine.running && models.length > 0;
@@ -68,13 +134,13 @@ export default function App() {
   if (engine === null) {
     return <div className="h-full titlebar" data-tauri-drag-region />;
   }
-  if (needsOnboarding && route.page !== "engine" && route.page !== "models") {
+  if (needsOnboarding && route.page !== "settings" && route.page !== "models") {
     return <Onboarding onSkip={() => setSkip(true)} />;
   }
 
   return (
     <div className="flex h-full">
-      <Sidebar dark={dark} toggleDark={toggle} />
+      <Sidebar />
       <main className="relative flex min-w-0 flex-1 flex-col bg-background">
         {/* Unified toolbar: page title and actions share the bar with the window's drag area. */}
         <div
@@ -94,13 +160,26 @@ export default function App() {
               {route.page === "new-experiment" && <NewExperiment datasetId={route.datasetId} />}
               {route.page === "experiments" && <Experiments />}
               {route.page === "experiment" && <ExperimentDetail id={route.id} />}
+              {route.page === "compare" && <Compare a={route.a} b={route.b} />}
+              {route.page === "review" && <Review id={route.id} question={route.question} />}
               {route.page === "models" && <Models />}
               {route.page === "finetune" && <FineTune />}
-              {route.page === "engine" && <EnginePage />}
+              {(route.page === "settings" || route.page === "engine") && <Settings />}
             </div>
           </ToolbarContext.Provider>
         </div>
       </main>
+
+      {dragging && (
+        <div className="pointer-events-none fixed inset-3 z-[95] grid place-items-center rounded-[18px] border-2 border-dashed border-primary bg-primary/8 backdrop-blur-[2px]" style={{ animation: "fade-in 0.15s ease-out both" }}>
+          <div className="flex flex-col items-center gap-2 text-primary">
+            <FileUp className="size-8 stroke-[1.5]" />
+            <div className="text-[14px] font-semibold">Drop to import dataset</div>
+            <div className="text-[12px] opacity-80">CSV, TSV, JSON or JSONL</div>
+          </div>
+        </div>
+      )}
+      <Palette open={paletteOpen} onOpenChange={setPaletteOpen} />
       <AnimatedToastStack toasts={toasts} onDismiss={dismissToast} position="bottom-center" fixed />
     </div>
   );

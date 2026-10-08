@@ -38,7 +38,7 @@ async fn experiment_runs_and_scores() {
         Win a prize,???,yes\n";
     let d = store.insert_dataset("tickets", None, &parse_delimited(csv, b',').unwrap()).unwrap();
 
-    let labels = |vs: &[&str]| vs.iter().map(|v| LabelSpec { value: v.to_string(), description: None }).collect();
+    let labels = |vs: &[&str]| vs.iter().map(|v| LabelSpec { value: v.to_string(), description: None, aliases: vec![] }).collect();
     let config = ExperimentConfig {
         name: "e2e".into(),
         dataset_id: d.id,
@@ -113,6 +113,20 @@ async fn experiment_runs_and_scores() {
         .unwrap();
     assert_eq!(again, ExperimentStatus::Completed);
     assert_eq!(store.predictions(&id).unwrap().len(), 20);
+
+    // a human correction changes the report without re-running; the review queue and the
+    // written report see it too
+    let e = store.get_experiment(&id).unwrap();
+    let team = e.config.task("team").unwrap();
+    let before = classifai_core::analysis::report(&store, &e, team).unwrap();
+    store.set_label_correction(&e.dataset_id, 1, "label", "account", Some("misfiled")).unwrap();
+    let after = classifai_core::analysis::report(&store, &e, team).unwrap();
+    assert_eq!(after.reviewed_rows, 1);
+    assert!(after.models[0].accuracy < before.models[0].accuracy, "laya answered technical for row 1");
+    let queue = classifai_core::analysis::review_queue(&store, &e, team, "wrong", 0, 10, None).unwrap();
+    assert_eq!(queue.rows.last().map(|r| (r.row_idx, r.corrected)), Some((1, true)));
+    let md = classifai_core::export::render_report(&store, &id, classifai_core::export::Format::Markdown).unwrap();
+    assert!(md.contains("1 row was manually adjudicated (1 corrected, 0 confirmed)"), "{md}");
 }
 
 fn base_url() -> String {

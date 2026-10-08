@@ -16,6 +16,8 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useState, type ReactNode, type TextareaHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
 import { useToolbar } from "@/lib/toolbar";
+import { useApp } from "@/lib/app";
+import { describeError } from "@/lib/errors";
 import { Tooltip } from "@/components/motion/tooltip";
 
 export { Tooltip };
@@ -201,12 +203,12 @@ export function Section({ title, subtitle, actions, children, className }: { tit
   return (
     <section className={cn("border-t border-border pt-5 pb-7 first:border-t-0 first:pt-0", className)}>
       {(title || actions) && (
-        <div className="mb-4 flex items-end justify-between gap-4">
-          <div>
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+          <div className="min-w-[14rem] flex-1">
             {title && <h2 className="text-[14px] font-semibold tracking-[-0.01em]">{title}</h2>}
             {subtitle && <div className="mt-0.5 text-[12px] text-muted-foreground">{subtitle}</div>}
           </div>
-          {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+          {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
         </div>
       )}
       {children}
@@ -346,10 +348,18 @@ export function PageHeader({ title, subtitle, actions, back }: { title: ReactNod
   return <div className="mb-6">{content}</div>;
 }
 
-export function ErrorNote({ children }: { children: ReactNode }) {
+/** Inline error. Pass `error` (a backend error) to get plain language and a one-click fix. */
+export function ErrorNote({ children, error }: { children?: ReactNode; error?: unknown }) {
+  const { go } = useApp();
+  const problem = error !== undefined ? describeError(error) : null;
   return (
-    <div className="rounded-[10px] bg-bad-soft px-3 py-2 text-[12.5px] text-bad fade-up" data-selectable>
-      {children}
+    <div className="flex items-center gap-3 rounded-[10px] bg-bad-soft px-3 py-2 text-[12.5px] text-bad fade-up" data-selectable>
+      <span className="min-w-0 flex-1">{problem ? problem.message : children}</span>
+      {problem?.action && (
+        <Button size="sm" variant="secondary" className="shrink-0" onClick={() => go(problem.action!.route)}>
+          {problem.action.label}
+        </Button>
+      )}
     </div>
   );
 }

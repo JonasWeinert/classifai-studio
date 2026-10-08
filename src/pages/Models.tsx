@@ -1,16 +1,18 @@
 import { cn } from "@/lib/utils";
-import { Check, Cloud, Cpu, Download, ExternalLink, KeyRound, Plus, Star, Trash2 } from "lucide-react";
+import { Check, Cloud, Cpu, Download, ExternalLink, KeyRound, Plus, RotateCcw, Star, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Badge, Button, ErrorNote, FormRow, Input, Modal, PageHeader, Progress, Section, Segmented, Spinner, Switch } from "../components/ui";
+import { Badge, Button, ErrorNote, FormRow, Input, Modal, PageHeader, Progress, Section, Segmented, Spinner, Switch, Tooltip } from "../components/ui";
 import { api, errorMessage, openExternal } from "../lib/api";
 import { useApp, useAsync } from "../lib/app";
 import { bytes, shortModel, tokens, usd } from "../lib/format";
-import type { CloudModel, Provider, ProviderKind } from "../lib/types";
+import type { CloudModel, Provider, ProviderKind, TrackRecord } from "../lib/types";
 
 type Tab = "local" | "cloud" | "usage";
 
 export function Models() {
-  const [tab, setTab] = useState<Tab>("local");
+  const { route, go, budget } = useApp();
+  const tab: Tab = route.page === "models" && route.tab ? route.tab : "local";
+  const setTab = (t: Tab) => go({ page: "models", tab: t });
   return (
     <>
       <PageHeader
@@ -28,6 +30,16 @@ export function Models() {
           />
         }
       />
+      {budget && budget.ratio !== null && budget.ratio >= 0.8 && (
+        <div className={cn("mb-6 flex items-center justify-between rounded-[12px] px-4 py-2.5 text-[12.5px]", budget.exceeded ? "bg-bad-soft text-bad" : "bg-warn-soft text-warn")}>
+          <span>
+            {budget.exceeded ? "This month's cloud budget is used up." : `You've used ${Math.round(budget.ratio * 100)}% of this month's cloud budget.`} {usd(budget.month_spend_usd)} of {usd(budget.budget_usd ?? 0)}.
+          </span>
+          <button className="font-medium hover:underline" onClick={() => go({ page: "settings", tab: "accounts" })}>
+            Budget settings
+          </button>
+        </div>
+      )}
       <div key={tab} className="page-in">
         {tab === "local" && <LocalModels />}
         {tab === "cloud" && <CloudProviders />}
@@ -39,8 +51,39 @@ export function Models() {
 
 // ---- local (Ollaya) ------------------------------------------------------------------------------
 
+// One shared request for all rows; refreshed at most every 30 s.
+let trackCache: { at: number; p: Promise<TrackRecord[]> } | null = null;
+const loadTrack = () => {
+  if (!trackCache || Date.now() - trackCache.at > 30_000) trackCache = { at: Date.now(), p: api.trackRecord() };
+  return trackCache.p;
+};
+
+/** Best result each model reached on the user's own experiments, keyed by model id. */
+function useTrackRecord() {
+  const t = useAsync(loadTrack, []);
+  return useMemo(() => {
+    const m = new Map<string, TrackRecord>();
+    for (const r of t.data ?? []) {
+      const key = r.model.replace(/:latest$/, "");
+      if (!m.has(key)) m.set(key, r);
+    }
+    return m;
+  }, [t.data]);
+}
+
+function TrackBadge({ r }: { r?: TrackRecord }) {
+  const { go } = useApp();
+  if (!r) return null;
+  return (
+    <button onClick={() => go({ page: "experiment", id: r.experiment_id })} className="inline-flex h-[18px] items-center gap-1 rounded-full bg-good-soft px-2 text-[11px] font-medium text-good hover:underline" title={`Best on your data: ${r.experiment_name} · ${r.question_id}`}>
+      Your data: F1 {r.macro_f1.toFixed(2)}
+    </button>
+  );
+}
+
 function LocalModels() {
   const { models, pulls, pull, refreshModels, toast, engine } = useApp();
+  const track = useTrackRecord();
   const catalog = useAsync(() => api.modelsCatalog(), []);
   const [custom, setCustom] = useState("");
   const installedNames = new Set(models.map((m) => m.name));
@@ -70,7 +113,10 @@ function LocalModels() {
             <div key={m.name} className="flex items-center gap-3 py-2.5">
               <Cpu className="size-4 text-faint" />
               <div className="min-w-0 flex-1">
-                <div className="text-[13px] font-medium">{m.name}</div>
+                <div className="flex items-center gap-2 text-[13px] font-medium">
+                  {m.name}
+                  <TrackBadge r={track.get(m.name.replace(/:latest$/, ""))} />
+                </div>
                 <div className="text-[11.5px] text-muted-foreground">{[m.details.format, m.details.parameter_size, m.details.quantization_level].filter(Boolean).join(" · ")}</div>
               </div>
               <span className="font-mono text-[12px] text-muted-foreground tnum">{bytes(m.size)}</span>
@@ -112,7 +158,10 @@ function LocalModels() {
                     </Badge>
                   )}
                 </div>
-                <div className="mt-0.5 font-mono text-[11.5px] text-faint">{c.name}</div>
+                <div className="mt-0.5 flex items-center gap-2 font-mono text-[11.5px] text-faint">
+                  {c.name}
+                  <TrackBadge r={track.get(c.name)} />
+                </div>
                 <p className="mt-2 flex-1 text-[12.5px] leading-relaxed text-muted-foreground">{c.description}</p>
                 <div className="mt-3 flex flex-wrap gap-1">
                   <Badge>{c.kind}</Badge>
@@ -249,6 +298,8 @@ function ProviderBlock({ p, onEdit, onAddModel, onChanged }: { p: Provider; onEd
 
 /** One cloud model: enable toggle and inline-editable prices (saved on blur). */
 function CloudModelRow({ m, disabled, onChanged, onError }: { m: CloudModel; disabled: boolean; onChanged: () => void; onError: (e: string) => void }) {
+  const track = useTrackRecord();
+  const isDefault = m.default_input_price_per_mtok == null || (m.default_input_price_per_mtok === m.input_price_per_mtok && (m.default_output_price_per_mtok ?? 0) === m.output_price_per_mtok);
   const [inPrice, setIn] = useState(String(m.input_price_per_mtok));
   const [outPrice, setOut] = useState(String(m.output_price_per_mtok));
   useEffect(() => {
@@ -283,11 +334,24 @@ function CloudModelRow({ m, disabled, onChanged, onError }: { m: CloudModel; dis
         <div className="flex items-center gap-2">
           <span className="text-[13px] font-medium">{m.display_name}</span>
           <span className="font-mono text-[11px] text-faint">{m.id}</span>
+          <TrackBadge r={track.get(m.id)} />
         </div>
         {m.description && <div className="truncate text-[11.5px] text-muted-foreground">{m.description}</div>}
       </div>
       <PriceField label="in" value={inPrice} onChange={setIn} onCommit={(v) => commit("input", v)} />
-      <PriceField label="out" value={outPrice} onChange={setOut} onCommit={(v) => commit("output", v)} />
+      <div className="flex items-center">
+        <PriceField label="out" value={outPrice} onChange={setOut} onCommit={(v) => commit("output", v)} />
+        <Tooltip content={isDefault ? "Published price (Oct 2026)" : "Reset to the published price"}>
+          <button
+            disabled={isDefault}
+            onClick={() => save({ input: m.default_input_price_per_mtok ?? m.input_price_per_mtok, output: m.default_output_price_per_mtok ?? 0 })}
+            className="ml-1 grid size-6 place-items-center rounded-full text-faint hover:bg-sel hover:text-foreground disabled:opacity-40"
+            aria-label="Reset price"
+          >
+            <RotateCcw className="size-3" />
+          </button>
+        </Tooltip>
+      </div>
       <Switch checked={m.enabled} onChange={(enabled) => save({ enabled })} />
       {!m.builtin ? (
         <Button

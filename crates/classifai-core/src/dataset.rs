@@ -30,6 +30,21 @@ pub fn parse_file(path: &Path) -> Result<ParsedDataset> {
     }
 }
 
+/// Parse pasted text: JSON (array or object) or JSON Lines when it starts with `[` or `{`,
+/// otherwise CSV/TSV with the delimiter sniffed from the header line.
+pub fn parse_text(text: &str) -> Result<ParsedDataset> {
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let trimmed = body.trim_start();
+    if trimmed.starts_with('[') {
+        return parse_json(trimmed);
+    }
+    if trimmed.starts_with('{') {
+        // One object per line is JSON Lines; a single (possibly multi-line) object is JSON.
+        return parse_jsonl(trimmed).or_else(|jsonl_err| parse_json(trimmed).map_err(|_| jsonl_err));
+    }
+    parse_delimited(body, sniff_delimiter(body))
+}
+
 fn sniff_delimiter(text: &str) -> u8 {
     let first = text.lines().next().unwrap_or("");
     [b',', b';', b'\t', b'|']
@@ -175,6 +190,23 @@ mod tests {
         assert_eq!(d.rows[0]["label"], "1");
         assert_eq!(d.rows[1]["label"], "");
         assert_eq!(d.rows[1]["meta"], "{\"k\":true}");
+    }
+
+    #[test]
+    fn pasted_text_formats() {
+        let tsv = parse_text("text\tlabel\nhello, world\ta\n").unwrap();
+        assert_eq!(tsv.columns, vec!["text", "label"]);
+        assert_eq!(tsv.rows[0]["text"], "hello, world");
+        let csv = parse_text("\u{feff}a,b\n1,2\n3,4\n").unwrap();
+        assert_eq!(csv.rows.len(), 2);
+        let json = parse_text("  [{\"text\": \"x\", \"n\": 2}]").unwrap();
+        assert_eq!(json.rows[0]["n"], "2");
+        let jsonl = parse_text("{\"t\":\"a\"}\n{\"t\":\"b\"}\n").unwrap();
+        assert_eq!(jsonl.rows.len(), 2);
+        let wrapped = parse_text("{\n  \"rows\": [{\"t\": \"a\"}]\n}").unwrap();
+        assert_eq!(wrapped.rows[0]["t"], "a");
+        assert!(parse_text("{not json").is_err());
+        assert!(parse_text("").is_err());
     }
 
     #[test]

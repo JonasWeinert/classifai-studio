@@ -159,3 +159,83 @@ export function Distribution({ items, total }: { items: { value: string; count: 
     </div>
   );
 }
+
+/** Precision / recall / F1 against the yes/no decision threshold, with markers for the selected and stored threshold. */
+export function ThresholdChart({
+  points,
+  value,
+  current,
+  onPick,
+  width = 560,
+  height = 220,
+}: {
+  points: { threshold: number; precision: number; recall: number; f1: number }[];
+  value: number;
+  current: number;
+  onPick?: (t: number) => void;
+  width?: number;
+  height?: number;
+}) {
+  const padL = 28,
+    padB = 20,
+    padT = 6,
+    padR = 8;
+  const iw = width - padL - padR,
+    ih = height - padB - padT;
+  const x = (t: number) => padL + t * iw;
+  const y = (v: number) => padT + (1 - v) * ih;
+  const series: { key: "precision" | "recall" | "f1"; color: string; label: string; dash?: string }[] = [
+    { key: "precision", color: "var(--primary)", label: "Precision" },
+    { key: "recall", color: "#f59e0b", label: "Recall", dash: "5 3" },
+    { key: "f1", color: "var(--good)", label: "F1" },
+  ];
+  const path = (k: "precision" | "recall" | "f1") => points.map((p, i) => `${i ? "L" : "M"}${x(p.threshold).toFixed(1)},${y(p[k]).toFixed(1)}`).join("");
+  const pick = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!onPick) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const t = ((e.clientX - r.left) * (width / r.width) - padL) / iw;
+    onPick(Math.min(0.99, Math.max(0.01, Math.round(t * 100) / 100)));
+  };
+  return (
+    <div>
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxWidth: width }} className={clsx("max-w-full overflow-visible", onPick && "cursor-crosshair")} onClick={pick}>
+        <rect x={padL} y={padT} width={iw} height={ih} fill="var(--card)" rx={4} />
+        {[0.25, 0.5, 0.75].map((t) => (
+          <line key={t} x1={padL} x2={padL + iw} y1={y(t)} y2={y(t)} stroke="var(--border)" />
+        ))}
+        {series.map((s) => (
+          <path key={s.key} d={path(s.key)} fill="none" stroke={s.color} strokeWidth={2} strokeDasharray={s.dash} strokeLinejoin="round" />
+        ))}
+        <line x1={x(current)} x2={x(current)} y1={padT} y2={padT + ih} stroke="var(--faint)" strokeDasharray="2 3" />
+        <line x1={x(value)} x2={x(value)} y1={padT} y2={padT + ih} stroke="var(--foreground)" strokeWidth={1.5} />
+        <text x={padL - 5} y={padT + 8} fontSize={10.5} fill="var(--faint)" textAnchor="end">1</text>
+        <text x={padL - 5} y={padT + ih} fontSize={10.5} fill="var(--faint)" textAnchor="end">0</text>
+        <text x={padL} y={height - 4} fontSize={10.5} fill="var(--faint)">0</text>
+        <text x={padL + iw / 2} y={height - 4} fontSize={10.5} fill="var(--faint)" textAnchor="middle">threshold on P(yes)</text>
+        <text x={padL + iw} y={height - 4} fontSize={10.5} fill="var(--faint)" textAnchor="end">1</text>
+      </svg>
+      <div className="mt-1.5 flex flex-wrap gap-4 pl-7 text-[11.5px] text-muted-foreground">
+        {series.map((s) => (
+          <span key={s.key} className="flex items-center gap-1.5">
+            <svg width="16" height="4">
+              <line x1="0" x2="16" y1="2" y2="2" stroke={s.color} strokeWidth={2} strokeDasharray={s.dash ? "4 2" : undefined} />
+            </svg>
+            {s.label}
+          </span>
+        ))}
+        <span className="flex items-center gap-1.5">
+          <svg width="10" height="10">
+            <line x1="5" x2="5" y1="0" y2="10" stroke="var(--faint)" strokeDasharray="2 2" />
+          </svg>
+          stored
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** Heat colour for a 0–1 score (used by the cross-question table and κ matrices). */
+export function heat(v: number) {
+  const s = Math.max(0, Math.min(1, v));
+  return `color-mix(in srgb, var(--primary) ${Math.round(8 + s * 62)}%, transparent)`;
+}

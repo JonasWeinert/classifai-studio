@@ -1,24 +1,38 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAnimatedToastStack, type AnimatedToast } from "@/components/motion/animated-toast-stack";
 import { api, errorMessage, events } from "./api";
-import type { CloudModel, EngineStatus, LocalModel, Provider, PullEvent } from "./types";
+import { load, save } from "./persist";
+import type { BudgetStatus, CloudModel, EngineStatus, LocalModel, Provider, PullEvent } from "./types";
+
+export type ThemePref = "system" | "light" | "dark";
 
 export type Route =
   | { page: "quick" }
   | { page: "datasets" }
   | { page: "dataset"; id: string }
-  | { page: "new-experiment"; datasetId?: string }
+  | { page: "new-experiment"; datasetId?: string; fromExperiment?: string; fromSet?: string }
   | { page: "experiments" }
   | { page: "experiment"; id: string }
-  | { page: "models" }
+  | { page: "models"; tab?: "local" | "cloud" | "usage" }
   | { page: "finetune" }
-  | { page: "engine" };
+  | { page: "engine" }
+  | { page: "settings"; tab?: "general" | "engine" | "accounts" }
+  | { page: "compare"; a: string; b?: string }
+  | { page: "review"; id: string; question?: string };
 
 type Tone = "good" | "bad" | "neutral";
 
 interface AppCtx {
   route: Route;
   go: (r: Route) => void;
+  /** Previous page (⌘[ / toolbar back). */
+  back: () => void;
+  canGoBack: boolean;
+  theme: ThemePref;
+  setTheme: (t: ThemePref) => void;
+  dark: boolean;
+  budget: BudgetStatus | null;
+  refreshBudget: () => Promise<void>;
   engine: EngineStatus | null;
   refreshEngine: () => Promise<EngineStatus | null>;
   models: LocalModel[];
@@ -37,7 +51,12 @@ interface AppCtx {
 const Ctx = createContext<AppCtx | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [route, setRoute] = useState<Route>({ page: "quick" });
+  // Restore the last page; detail pages fall back to their list if the item is gone (pages handle that).
+  const [route, setRoute] = useState<Route>(() => load<Route>("route", { page: "quick" }));
+  const [history, setHistory] = useState<Route[]>([]);
+  const [theme, setThemeState] = useState<ThemePref>(() => load<ThemePref>("theme", "system"));
+  const [sysDark, setSysDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const [budget, setBudget] = useState<BudgetStatus | null>(null);
   const [engine, setEngine] = useState<EngineStatus | null>(null);
   const [models, setModels] = useState<LocalModel[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -122,14 +141,62 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [refreshModels, toast],
   );
 
+  // History lives in a ref so navigation stays a plain state update (safe under StrictMode).
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const historyRef = useRef<Route[]>([]);
+
   const go = useCallback((r: Route) => {
+    if (JSON.stringify(routeRef.current) !== JSON.stringify(r)) {
+      historyRef.current = [...historyRef.current.slice(-30), routeRef.current];
+      setHistory(historyRef.current);
+    }
     setRoute(r);
     document.getElementById("main-scroll")?.scrollTo({ top: 0 });
   }, []);
 
+  const back = useCallback(() => {
+    const h = historyRef.current;
+    if (!h.length) return;
+    historyRef.current = h.slice(0, -1);
+    setHistory(historyRef.current);
+    setRoute(h[h.length - 1]);
+  }, []);
+
+  useEffect(() => save("route", route), [route]);
+
+  // Appearance: follow the system unless the user picked light or dark in Settings.
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const h = (e: MediaQueryListEvent) => setSysDark(e.matches);
+    media.addEventListener("change", h);
+    return () => media.removeEventListener("change", h);
+  }, []);
+  const dark = theme === "system" ? sysDark : theme === "dark";
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", dark);
+  }, [dark]);
+  const setTheme = useCallback((t: ThemePref) => {
+    setThemeState(t);
+    save("theme", t);
+  }, []);
+
+  const refreshBudget = useCallback(async () => {
+    try {
+      setBudget(await api.budget());
+    } catch {
+      setBudget(null);
+    }
+  }, []);
+  useEffect(() => {
+    refreshBudget();
+    const t = setInterval(refreshBudget, 60_000);
+    return () => clearInterval(t);
+  }, [refreshBudget]);
+
   const value = useMemo(
-    () => ({ route, go, engine, refreshEngine, models, refreshModels, providers, refreshProviders, cloudModels, pulls, pull, toast, toasts, dismissToast }),
-    [route, go, engine, refreshEngine, models, refreshModels, providers, refreshProviders, cloudModels, pulls, pull, toast, toasts, dismissToast],
+    () => ({ route, go, back, canGoBack: history.length > 0, theme, setTheme, dark, budget, refreshBudget, engine, refreshEngine, models, refreshModels, providers, refreshProviders, cloudModels, pulls, pull, toast, toasts, dismissToast }),
+    [route, go, back, history.length, theme, setTheme, dark, budget, refreshBudget, engine, refreshEngine, models, refreshModels, providers, refreshProviders, cloudModels, pulls, pull, toast, toasts, dismissToast],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

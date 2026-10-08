@@ -9,7 +9,8 @@ use classifai_core::engine::Engine;
 use classifai_core::ollaya::Client;
 use classifai_core::secrets::KeychainSecrets;
 use classifai_core::store::Store;
-use tauri::Manager;
+use tauri::menu::{AboutMetadata, Menu, MenuItemBuilder, SubmenuBuilder};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 pub struct AppState {
     pub store: Arc<Store>,
@@ -26,12 +27,87 @@ impl AppState {
     }
 }
 
+/// Custom menu items: (id = payload of `menu://action`, title, accelerator).
+const MENU_ACTIONS: &[(&str, &str, &str)] = &[
+    ("settings", "Settings…", "CmdOrCtrl+,"),
+    ("import", "Import Dataset…", "CmdOrCtrl+O"),
+    ("new-experiment", "New Experiment", "CmdOrCtrl+N"),
+    ("nav:quick", "Quick Check", "CmdOrCtrl+1"),
+    ("nav:datasets", "Datasets", "CmdOrCtrl+2"),
+    ("nav:experiments", "Experiments", "CmdOrCtrl+3"),
+    ("nav:models", "Models", "CmdOrCtrl+4"),
+    ("palette", "Command Palette", "CmdOrCtrl+K"),
+    ("back", "Back", "CmdOrCtrl+["),
+];
+
+/// The native menu bar. Custom items emit `menu://action` with their id; the standard Edit items
+/// are what make copy/paste/undo work in text fields on macOS.
+fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let item = |id: &str| -> tauri::Result<_> {
+        let (id, title, accel) = MENU_ACTIONS.iter().find(|(i, ..)| *i == id).expect("menu action");
+        MenuItemBuilder::with_id(*id, *title).accelerator(*accel).build(app)
+    };
+    let about = AboutMetadata {
+        name: Some("ClassifAI".into()),
+        version: Some(app.package_info().version.to_string()),
+        ..Default::default()
+    };
+    let app_menu = SubmenuBuilder::new(app, "ClassifAI")
+        .about(Some(about))
+        .separator()
+        .item(&item("settings")?)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+    let file = SubmenuBuilder::new(app, "File")
+        .item(&item("import")?)
+        .item(&item("new-experiment")?)
+        .separator()
+        .close_window()
+        .build()?;
+    let edit = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+    let view = SubmenuBuilder::new(app, "View")
+        .item(&item("nav:quick")?)
+        .item(&item("nav:datasets")?)
+        .item(&item("nav:experiments")?)
+        .item(&item("nav:models")?)
+        .separator()
+        .item(&item("palette")?)
+        .separator()
+        .fullscreen()
+        .build()?;
+    let go = SubmenuBuilder::new(app, "Go").item(&item("back")?).build()?;
+    let window = SubmenuBuilder::new(app, "Window").minimize().maximize().separator().bring_all_to_front().build()?;
+    Menu::with_items(app, &[&app_menu, &file, &edit, &view, &go, &window])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            app.set_menu(build_menu(app.handle())?)?;
+            app.on_menu_event(|app, event| {
+                let id = event.id().as_ref();
+                if MENU_ACTIONS.iter().any(|(a, ..)| *a == id) {
+                    let _ = app.emit("menu://action", id);
+                }
+            });
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let store = Store::open(&data_dir.join(classifai_core::DB_FILE))?;
@@ -77,6 +153,7 @@ pub fn run() {
             commands::dataset_list,
             commands::dataset_get,
             commands::dataset_rows,
+            commands::dataset_import_text,
             commands::dataset_value_counts,
             commands::dataset_rename,
             commands::dataset_delete,
@@ -90,6 +167,22 @@ pub fn run() {
             commands::experiment_delete,
             commands::experiment_export_csv,
             commands::experiment_usage,
+            commands::experiment_estimate,
+            commands::experiment_threshold_curve,
+            commands::experiment_set_threshold,
+            commands::experiment_review_queue,
+            commands::experiment_export_report,
+            commands::label_correction_set,
+            commands::label_correction_clear,
+            commands::label_corrections_list,
+            commands::question_sets_list,
+            commands::question_set_get,
+            commands::question_set_save,
+            commands::question_set_delete,
+            commands::settings_get,
+            commands::settings_save,
+            commands::budget_status,
+            commands::models_track_record,
             commands::providers_list,
             commands::provider_save,
             commands::provider_delete,

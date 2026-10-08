@@ -11,7 +11,7 @@ use classifai_core::engine::Engine;
 use classifai_core::ollaya::{Answer, Client, NoulCriteria, Question, DEFAULT_BASE_URL};
 use classifai_core::secrets::KeychainSecrets;
 use classifai_core::store::Store;
-use classifai_core::{eval, runner};
+use classifai_core::{analysis, export, runner};
 use indexmap::IndexMap;
 
 #[derive(Parser)]
@@ -54,6 +54,14 @@ enum Cmd {
     Experiments,
     /// Print the leaderboard of an experiment, one per question
     Report { id: String },
+    /// Write a report of an experiment (setup, metrics, agreement, cost, methods) to a file
+    Export {
+        id: String,
+        path: String,
+        /// md or html; default from the file extension, else md
+        #[arg(long)]
+        format: Option<String>,
+    },
     /// Run (or resume) an experiment that was created in the app
     Run { id: String },
     /// Requests, tokens and cost per model
@@ -166,21 +174,40 @@ async fn main() -> Result<()> {
         Cmd::Report { id } => {
             let store = Store::open(&data_dir.join(classifai_core::DB_FILE))?;
             let e = store.get_experiment(&id)?;
-            for (i, task) in e.config.tasks.iter().enumerate() {
-                let preds = store.predictions_for(&id, &task.id)?;
-                let r = eval::report(&task.id, &task.label_values(), &e.config.models, &preds);
+            for (i, r) in analysis::reports(&store, &e)?.into_iter().enumerate() {
                 if i > 0 {
                     println!();
                 }
                 println!("== {} ==", r.question_id);
-                println!("{:<28} {:>8} {:>8} {:>8} {:>9} {:>6}", "model", "acc", "macroF1", "ECE", "p50 ms", "errors");
-                for m in r.models {
+                println!(
+                    "{:<28} {:>8} {:>8} {:>8} {:>8} {:>9} {:>6}",
+                    "model", "acc", "macroF1", "kappa", "ECE", "p50 ms", "errors"
+                );
+                for m in &r.models {
                     println!(
-                        "{:<28} {:>8.3} {:>8.3} {:>8.3} {:>9.1} {:>6}",
-                        m.model, m.accuracy, m.macro_f1, m.ece, m.latency_p50_ms, m.errors
+                        "{:<28} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>9.1} {:>6}",
+                        m.model, m.accuracy, m.macro_f1, m.kappa, m.ece, m.latency_p50_ms, m.errors
                     );
                 }
+                if let Some(k) = r.fleiss_kappa {
+                    println!("Fleiss kappa {k:.3}");
+                }
+                if r.reviewed_rows > 0 {
+                    println!("{} rows reviewed by a human", r.reviewed_rows);
+                }
             }
+        }
+        Cmd::Export { id, path, format } => {
+            let store = Store::open(&data_dir.join(classifai_core::DB_FILE))?;
+            let format = match format {
+                Some(f) => export::Format::parse(&f)?,
+                None if path.to_ascii_lowercase().ends_with(".html") || path.to_ascii_lowercase().ends_with(".htm") => {
+                    export::Format::Html
+                }
+                None => export::Format::Markdown,
+            };
+            let written = export::write_report(&store, &id, &path, format)?;
+            println!("{written}");
         }
         Cmd::Run { id } => {
             let store = open_store()?;

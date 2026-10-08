@@ -3,17 +3,20 @@
 //! - [`ollaya`]: typed HTTP client for the Ollaya daemon (`/api/decide`, `/api/pull`, ...)
 //! - [`engine`]: locate, install, start and stop the Ollaya binary
 //! - [`dataset`]: parse CSV / TSV / JSON / JSONL files into rows
-//! - [`store`]: SQLite persistence for datasets, experiments and predictions
+//! - [`store`]: SQLite persistence for datasets, experiments, predictions, corrections, question sets, settings
 //! - [`questions`]: pick-any, rank and number questions built from Ollaya's primitives
 //! - [`task`]: turn a dataset row + ground-truth mapping into an Ollaya question
 //! - [`runner`]: execute an experiment (rows x models) with progress and cancellation
-//! - [`eval`]: accuracy, F1, confusion matrices, calibration, latency
+//! - [`eval`]: accuracy, F1, Cohen's / Fleiss' kappa, confusion matrices, calibration, latency
+//! - [`analysis`]: reports with label corrections, review queue, thresholds, estimates, track record
+//! - [`export`]: written experiment reports (Markdown / HTML)
 //! - [`catalog`]: curated list of decision models offered in the UI
 //! - [`providers`]: cloud providers (TypeSafe, OpenAI, Cloudflare, custom), model ids and prices
 //! - [`cloud`]: HTTP clients for cloud decision models, translated to Ollaya's types
 //! - [`secrets`]: provider API keys in the OS keychain
 //! - [`decider`]: one entry point for local and cloud decisions, with usage and cost logging
 
+pub mod analysis;
 pub mod catalog;
 pub mod cloud;
 pub mod dataset;
@@ -21,6 +24,7 @@ pub mod decider;
 pub mod engine;
 pub mod error;
 pub mod eval;
+pub mod export;
 pub mod ollaya;
 pub mod providers;
 pub mod questions;

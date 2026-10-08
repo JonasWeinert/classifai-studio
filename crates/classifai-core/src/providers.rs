@@ -119,13 +119,22 @@ impl CloudModel {
 pub struct CloudModelView {
     /// `@{provider_id}/{model}`
     pub id: String,
+    /// Price the built-in model shipped with (for "reset to default"); None for custom models.
+    pub default_input_price_per_mtok: Option<f64>,
+    pub default_output_price_per_mtok: Option<f64>,
     #[serde(flatten)]
     pub model: CloudModel,
 }
 
 impl From<CloudModel> for CloudModelView {
     fn from(model: CloudModel) -> Self {
-        Self { id: model.id(), model }
+        let seed = builtin_models().into_iter().find(|b| b.provider_id == model.provider_id && b.model == model.model);
+        Self {
+            id: model.id(),
+            default_input_price_per_mtok: seed.as_ref().map(|b| b.input_price_per_mtok),
+            default_output_price_per_mtok: seed.as_ref().map(|b| b.output_price_per_mtok),
+            model,
+        }
     }
 }
 
@@ -308,5 +317,20 @@ mod tests {
         assert!(normalize_base_url(Some("x.dev")).is_err());
         assert_eq!(key_hint("sk-1234567890abcd").as_deref(), Some("abcd"));
         assert_eq!(key_hint("short"), None);
+    }
+
+    #[test]
+    fn views_carry_default_prices() {
+        let mut jev = builtin_models().remove(0);
+        jev.input_price_per_mtok = 9.0;
+        let v = serde_json::to_value(CloudModelView::from(jev)).unwrap();
+        assert_eq!(v["default_input_price_per_mtok"], 0.042);
+        assert_eq!(v["default_output_price_per_mtok"], 0.0);
+        assert_eq!(v["input_price_per_mtok"], 9.0);
+        let mut custom = builtin_models().remove(0);
+        custom.provider_id = "router".into();
+        let v = serde_json::to_value(CloudModelView::from(custom)).unwrap();
+        assert!(v["default_input_price_per_mtok"].is_null());
+        assert_eq!(v["id"], "@router/jev-latest");
     }
 }

@@ -71,6 +71,9 @@ export type ProviderKind = "typesafe" | "openai" | "cloudflare" | "custom";
 /** A hosted decision model. `id` is "@{provider}/{model}" and is used wherever a model name is. */
 export interface CloudModel {
   id: string;
+  /** Published price this model shipped with (for "reset to default"); null for custom models. */
+  default_input_price_per_mtok?: number | null;
+  default_output_price_per_mtok?: number | null;
   provider_id: string;
   model: string;
   display_name: string;
@@ -170,6 +173,8 @@ export type TaskKind = "choice" | "binary";
 export interface LabelSpec {
   value: string;
   description?: string | null;
+  /** Other ground-truth spellings that count as this label (e.g. "Billing", "billing "). */
+  aliases?: string[];
 }
 
 export interface TaskSpec {
@@ -255,6 +260,8 @@ export interface ModelMetrics {
   per_class: ClassMetrics[];
   confusion: number[][];
   calibration: CalibrationBin[];
+  /** Cohen's kappa between this model's predictions and the ground truth. */
+  kappa: number;
 }
 
 export interface Report {
@@ -262,6 +269,12 @@ export interface Report {
   labels: string[];
   models: ModelMetrics[];
   agreement: number[][];
+  /** Cohen's kappa between each pair of models (same order as models). */
+  pairwise_kappa: number[][];
+  /** Fleiss' kappa across all models (null with fewer than 2 models). */
+  fleiss_kappa: number | null;
+  /** Rows whose ground truth was corrected or confirmed by a human. */
+  reviewed_rows: number;
 }
 
 export interface ModelCell {
@@ -275,6 +288,10 @@ export interface PredictionRow {
   input: string;
   ground_truth: string;
   by_model: Record<string, ModelCell>;
+  /** Set when a human corrected or confirmed the ground truth of this row. */
+  corrected?: boolean;
+  original_ground_truth?: string | null;
+  review_note?: string | null;
 }
 
 export interface Page<T> {
@@ -286,3 +303,101 @@ export interface AppError {
   code: string;
   message: string;
 }
+
+// ---- Phase A/B/C contract ------------------------------------------------------------------------
+
+export interface EstimateModel {
+  model: string;
+  est_input_tokens: number;
+  est_cost_usd: number;
+  est_seconds: number;
+}
+
+export interface Estimate {
+  rows: number;
+  requests: number;
+  per_model: EstimateModel[];
+  total_cost_usd: number;
+  /** Wall-clock estimate; models run one after another. */
+  total_seconds: number;
+}
+
+/** Saved, versioned question set (template). `payload` is owned by the frontend (see QuestionSetPayload). */
+export interface QuestionSetSummary {
+  id: string;
+  name: string;
+  description: string;
+  version: number;
+  question_count: number;
+  updated_at: string;
+}
+
+export interface QuestionSet extends Omit<QuestionSetSummary, "question_count"> {
+  payload: QuestionSetPayload;
+}
+
+export interface QuestionSetPayload {
+  context: string;
+  questions: SetQuestion[];
+}
+
+/** One question in a set — the editor's draft shape, shared by Quick Check and New Experiment. */
+export interface SetQuestion {
+  kind: "choice" | "multi" | "noul" | "score" | "rank" | "number";
+  text: string;
+  context: string;
+  options: { name: string; description: string }[];
+  threshold: number;
+  yes: string;
+  no: string;
+  levels: string[];
+  values: string;
+  unit: string;
+}
+
+export interface ThresholdPoint {
+  threshold: number;
+  precision: number;
+  recall: number;
+  f1: number;
+  accuracy: number;
+}
+
+export interface ThresholdCurve {
+  points: ThresholdPoint[];
+  current: number;
+}
+
+export interface AppSettings {
+  monthly_budget_usd: number | null;
+  /** Refuse cloud requests once the monthly budget is used up. */
+  budget_hard_stop: boolean;
+}
+
+export interface BudgetStatus {
+  month_spend_usd: number;
+  budget_usd: number | null;
+  /** spend / budget, null without a budget */
+  ratio: number | null;
+  exceeded: boolean;
+}
+
+export interface LabelCorrection {
+  row_idx: number;
+  column: string;
+  original: string;
+  value: string;
+  note: string | null;
+  at: string;
+}
+
+export interface TrackRecord {
+  model: string;
+  experiment_id: string;
+  experiment_name: string;
+  question_id: string;
+  macro_f1: number;
+  accuracy: number;
+}
+
+export type ReviewStrategy = "disagree" | "low_confidence" | "wrong";

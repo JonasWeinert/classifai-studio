@@ -14,7 +14,7 @@ use classifai_core::ollaya::{Answer, Client, Question};
 use classifai_core::providers::{CloudModelInput, ProviderInput, ProviderKind};
 use classifai_core::runner;
 use classifai_core::secrets::{MemorySecrets, SecretStore};
-use classifai_core::store::{ExperimentConfig, ExperimentStatus, Store};
+use classifai_core::store::{AppSettings, ExperimentConfig, ExperimentStatus, Store};
 use classifai_core::task::{LabelSpec, TaskKind, TaskSpec};
 use indexmap::IndexMap;
 
@@ -71,7 +71,7 @@ async fn experiment_across_local_and_cloud_models() {
         Weird,???,\n\
         Win a prize,???,yes\n";
     let d = store.insert_dataset("tickets", None, &parse_delimited(csv, b',').unwrap()).unwrap();
-    let labels = |vs: &[&str]| vs.iter().map(|v| LabelSpec { value: v.to_string(), description: None }).collect();
+    let labels = |vs: &[&str]| vs.iter().map(|v| LabelSpec { value: v.to_string(), description: None, aliases: vec![] }).collect();
     let models = ["laya", "@custom/jev-latest", "@openai/gpt-6-luna", "@cloudflare/clef-flash", "@typesafe/jev-latest"];
     let config = ExperimentConfig {
         name: "cloud e2e".into(),
@@ -174,4 +174,30 @@ async fn experiment_across_local_and_cloud_models() {
     q.insert("x".to_string(), Question::Noul { instructions: Some("?".into()), criteria: None });
     let err = decider.decide("@cloudflare/clef-pro", "hi".into(), q, &UsageContext::quick()).await.unwrap_err();
     assert!(err.to_string().contains("No such model"), "{err}");
+
+    // the estimate prices the cloud models from their stored prices
+    let est = classifai_core::analysis::estimate(&store, &config).unwrap();
+    assert_eq!(est.rows, 6);
+    assert_eq!(est.per_model[0].est_cost_usd, 0.0, "local models are free");
+    assert!(est.per_model[1].est_cost_usd > 0.0);
+
+    // with the monthly budget used up and the hard stop on, cloud models are refused without a
+    // request while the local model still runs
+    let spent = store.budget_status().unwrap().month_spend_usd;
+    assert!(spent > 0.0);
+    store.save_settings(&AppSettings { monthly_budget_usd: Some(spent / 2.0), budget_hard_stop: true }).unwrap();
+    let requests_before: u64 = store.usage_summary(None).unwrap().iter().map(|r| r.requests).sum();
+    let config2 = ExperimentConfig { name: "over budget".into(), models: vec!["laya".into(), "@openai/gpt-6-luna".into()], ..config.clone() };
+    let id2 = runner::create(&store, &config2).unwrap();
+    let status = runner::execute(store.clone(), decider.clone(), id2.clone(), Arc::new(AtomicBool::new(false)), |_| {})
+        .await
+        .unwrap();
+    assert_eq!(status, ExperimentStatus::Completed);
+    let preds = store.predictions_for(&id2, "team").unwrap();
+    assert!(preds.iter().filter(|p| p.model == "laya").all(|p| p.error.is_none()));
+    let cloud: Vec<_> = preds.iter().filter(|p| p.model == "@openai/gpt-6-luna").collect();
+    assert_eq!(cloud.len(), 5);
+    assert!(cloud.iter().all(|p| p.error.as_deref().is_some_and(|e| e.contains("BUDGET_EXCEEDED"))), "{:?}", cloud[0].error);
+    let requests_after: u64 = store.usage_summary(None).unwrap().iter().map(|r| r.requests).sum();
+    assert_eq!(requests_after - requests_before, 6, "only the local model's 6 requests were sent");
 }

@@ -39,7 +39,7 @@
   --input: var(--border);
   --ring: color-mix(in srgb, var(--primary) 45%, transparent);
 
-  --faint: #a1a1a6;
+  --faint: #86868b;
   --sel: rgba(0, 0, 0, 0.06);
   --sidebar: #ececee;
   --good: var(--success);
@@ -67,7 +67,7 @@
   --glass-strong-bg: rgba(40, 40, 43, 0.7);
   --glass-thin-bg: rgba(30, 30, 32, 0.45);
   --popover: #2c2c2f;
-  --faint: #6c6c72;
+  --faint: #85858d;
   --sel: rgba(255, 255, 255, 0.08);
   --sidebar: #28282b;
   --good-soft: rgba(50, 208, 116, 0.14);

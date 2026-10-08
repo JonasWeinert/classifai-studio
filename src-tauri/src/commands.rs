@@ -4,23 +4,32 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use classifai_core::analysis::{self, Estimate, PredictionsPage, ThresholdCurve, TrackRecord};
 use classifai_core::catalog::{CatalogModel, CATALOG};
 use classifai_core::dataset;
 use classifai_core::decider::{ProviderTest, UsageContext};
 use classifai_core::engine::EngineStatus;
-use classifai_core::eval::{self, Report};
+use classifai_core::eval::Report;
+use classifai_core::export;
 use classifai_core::ollaya::{LocalModel, PresetSummary, Routing, Usage};
 use classifai_core::providers::{CloudModelInput, CloudModelView, ProviderInput, ProviderView};
 use classifai_core::questions::{self, AnyAnswer, AnyQuestion};
 use classifai_core::runner::{self, RunEvent};
-use classifai_core::store::{Dataset, Experiment, ExperimentConfig, ExperimentStatus, UsageRow, ValueCount};
-use classifai_core::task::TaskSpec;
+use classifai_core::store::{
+    AppSettings, BudgetStatus, Dataset, Experiment, ExperimentConfig, ExperimentStatus, LabelCorrection, QuestionSet,
+    QuestionSetInput, QuestionSetSummary, UsageRow, ValueCount,
+};
 use classifai_core::{Error, Result};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::AppState;
+
+/// Run store work off the main thread (sync commands run on it in Tauri).
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| Error::invalid(e.to_string()))?
+}
 
 #[derive(Serialize)]
 pub struct AppInfo {
@@ -279,10 +288,44 @@ pub struct RowsPage {
     total: usize,
 }
 
+/// A page of rows. `search`: case-insensitive substring of any cell; `sort_column`: numeric-aware
+/// (empty cells last). `total` is the number of matching rows.
 #[tauri::command]
-pub fn dataset_rows(state: State<'_, AppState>, id: String, offset: usize, limit: usize) -> Result<RowsPage> {
-    let d = state.store.get_dataset(&id)?;
-    Ok(RowsPage { rows: state.store.dataset_rows(&id, offset, limit.min(1000))?, total: d.row_count })
+pub async fn dataset_rows(
+    state: State<'_, AppState>,
+    id: String,
+    offset: usize,
+    limit: usize,
+    search: Option<String>,
+    sort_column: Option<String>,
+    sort_desc: Option<bool>,
+) -> Result<RowsPage> {
+    let store = state.store.clone();
+    blocking(move || {
+        store.get_dataset(&id)?;
+        let (rows, total) = store.dataset_rows_page(
+            &id,
+            offset,
+            limit.min(1000),
+            search.as_deref(),
+            sort_column.as_deref(),
+            sort_desc.unwrap_or(false),
+        )?;
+        Ok(RowsPage { rows, total })
+    })
+    .await
+}
+
+/// Import pasted CSV / TSV (delimiter sniffed) or JSON / JSONL text.
+#[tauri::command]
+pub async fn dataset_import_text(state: State<'_, AppState>, name: String, text: String) -> Result<Dataset> {
+    let store = state.store.clone();
+    blocking(move || {
+        let parsed = dataset::parse_text(&text)?;
+        let name = Some(name.trim()).filter(|n| !n.is_empty()).unwrap_or("Pasted data");
+        store.insert_dataset(name, None, &parsed)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -363,42 +406,17 @@ pub fn experiment_get(state: State<'_, AppState>, id: String) -> Result<Experime
     state.store.get_experiment(&id)
 }
 
-/// The task a command is about: `question` when given, else the experiment's first.
-fn pick_task<'a>(e: &'a Experiment, question: Option<&str>) -> Result<&'a TaskSpec> {
-    match question {
-        Some(q) => e.config.task(q).ok_or_else(|| Error::NotFound(format!("question {q}"))),
-        None => e.config.tasks.first().ok_or_else(|| Error::invalid("this experiment has no questions")),
-    }
-}
-
-/// Metrics for one question (default: the first).
+/// Metrics for one question (default: the first), with ground truth re-read from the dataset and
+/// label corrections.
 #[tauri::command]
-pub fn experiment_report(state: State<'_, AppState>, id: String, question: Option<String>) -> Result<Report> {
-    let e = state.store.get_experiment(&id)?;
-    let task = pick_task(&e, question.as_deref())?;
-    let preds = state.store.predictions_for(&id, &task.id)?;
-    Ok(eval::report(&task.id, &task.label_values(), &e.config.models, &preds))
-}
-
-#[derive(Serialize)]
-pub struct ModelCell {
-    predicted: Option<String>,
-    confidence: Option<f64>,
-    error: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct PredictionRow {
-    row_idx: usize,
-    input: String,
-    ground_truth: String,
-    by_model: IndexMap<String, ModelCell>,
-}
-
-#[derive(Serialize)]
-pub struct PredictionsPage {
-    rows: Vec<PredictionRow>,
-    total: usize,
+pub async fn experiment_report(state: State<'_, AppState>, id: String, question: Option<String>) -> Result<Report> {
+    let store = state.store.clone();
+    blocking(move || {
+        let e = store.get_experiment(&id)?;
+        let task = analysis::pick_task(&e, question.as_deref())?;
+        analysis::report(&store, &e, task)
+    })
+    .await
 }
 
 /// Rows of one question (default: the first); rows without a ground truth for it are left out.
@@ -406,7 +424,7 @@ pub struct PredictionsPage {
 /// `filter`: `all`, `wrong` (any model wrong or failed), `disagree` (models differ),
 /// `wrong:<model>` (that model wrong or failed).
 #[tauri::command]
-pub fn experiment_predictions(
+pub async fn experiment_predictions(
     state: State<'_, AppState>,
     id: String,
     question: Option<String>,
@@ -414,63 +432,72 @@ pub fn experiment_predictions(
     offset: usize,
     limit: usize,
 ) -> Result<PredictionsPage> {
-    let e = state.store.get_experiment(&id)?;
-    let task = pick_task(&e, question.as_deref())?;
-    let data = state.store.dataset_rows_by_index(&e.dataset_id, &e.row_indices)?;
-    let rows = joined_rows(&state, &e, task, &data)?;
-    let filtered: Vec<PredictionRow> = rows
-        .into_iter()
-        .filter(|r| {
-            let wrong = |c: &ModelCell| c.predicted.as_deref() != Some(r.ground_truth.as_str());
-            match filter.as_str() {
-                "wrong" => r.by_model.values().any(wrong),
-                "disagree" => {
-                    let mut preds = r.by_model.values().map(|c| c.predicted.as_deref());
-                    let first = preds.next();
-                    preds.any(|p| p != first.flatten())
-                }
-                f if f.starts_with("wrong:") => r.by_model.get(&f[6..]).map(wrong).unwrap_or(false),
-                _ => true,
-            }
-        })
-        .collect();
-    let total = filtered.len();
-    Ok(PredictionsPage { rows: filtered.into_iter().skip(offset).take(limit.min(500)).collect(), total })
+    let store = state.store.clone();
+    blocking(move || {
+        let e = store.get_experiment(&id)?;
+        let task = analysis::pick_task(&e, question.as_deref())?;
+        analysis::predictions_page(&store, &e, task, &filter, offset, limit.min(500))
+    })
+    .await
 }
 
-/// One question's predictions joined onto the experiment rows that have a ground truth for it.
-fn joined_rows(
-    state: &AppState,
-    e: &Experiment,
-    task: &TaskSpec,
-    data: &[(usize, dataset::Row)],
-) -> Result<Vec<PredictionRow>> {
-    let mut by_row: IndexMap<usize, PredictionRow> = data
-        .iter()
-        .filter_map(|(idx, row)| {
-            let ground_truth = task.ground_truth(row)?;
-            let by_model = e
-                .config
-                .models
-                .iter()
-                .map(|m| (m.clone(), ModelCell { predicted: None, confidence: None, error: Some("pending".into()) }))
-                .collect();
-            Some((*idx, PredictionRow { row_idx: *idx, input: input_text(&e.config, row), ground_truth, by_model }))
-        })
-        .collect();
-    for p in state.store.predictions_for(&e.id, &task.id)? {
-        if let Some(r) = by_row.get_mut(&p.row_idx) {
-            r.by_model.insert(p.model, ModelCell { predicted: p.predicted, confidence: p.confidence, error: p.error });
-        }
-    }
-    Ok(by_row.into_values().collect())
+/// Rows worth a human look: `strategy` is `disagree`, `wrong` or `low_confidence` (any answer
+/// below `confidence_below`, default 0.5). Reviewed rows last, least confident first.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn experiment_review_queue(
+    state: State<'_, AppState>,
+    id: String,
+    question: String,
+    strategy: String,
+    offset: usize,
+    limit: usize,
+    confidence_below: Option<f64>,
+) -> Result<PredictionsPage> {
+    let store = state.store.clone();
+    blocking(move || {
+        let e = store.get_experiment(&id)?;
+        let task = analysis::pick_task(&e, Some(&question))?;
+        analysis::review_queue(&store, &e, task, &strategy, offset, limit.min(500), confidence_below)
+    })
+    .await
 }
 
-fn input_text(config: &ExperimentConfig, row: &dataset::Row) -> String {
-    match config.state(row) {
-        serde_json::Value::String(s) => s,
-        v => v.to_string(),
-    }
+/// Rows, requests, tokens, cost and time of an experiment before it is created.
+#[tauri::command]
+pub async fn experiment_estimate(state: State<'_, AppState>, config: ExperimentConfig) -> Result<Estimate> {
+    let store = state.store.clone();
+    blocking(move || analysis::estimate(&store, &config)).await
+}
+
+/// Precision / recall / F1 / accuracy of a binary question at thresholds 0.05–0.95 for one model.
+#[tauri::command]
+pub async fn experiment_threshold_curve(
+    state: State<'_, AppState>,
+    id: String,
+    question: String,
+    model: String,
+) -> Result<ThresholdCurve> {
+    let store = state.store.clone();
+    blocking(move || {
+        let e = store.get_experiment(&id)?;
+        analysis::threshold_curve(&store, &e, &question, &model)
+    })
+    .await
+}
+
+/// Store a binary question's threshold and re-decide its stored answers.
+#[tauri::command]
+pub async fn experiment_set_threshold(state: State<'_, AppState>, id: String, question: String, threshold: f64) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || analysis::set_threshold(&store, &id, &question, threshold)).await
+}
+
+/// Write a Markdown (`md`) or self-contained HTML (`html`) report; returns the path.
+#[tauri::command]
+pub async fn experiment_export_report(state: State<'_, AppState>, id: String, path: String, format: String) -> Result<String> {
+    let store = state.store.clone();
+    blocking(move || export::write_report(&store, &id, &path, export::Format::parse(&format)?)).await
 }
 
 /// Requests, tokens and cost per model of one experiment.
@@ -485,49 +512,88 @@ pub fn experiment_delete(state: State<'_, AppState>, id: String) -> Result<()> {
     state.store.delete_experiment(&id)
 }
 
-/// One line per experiment row; per question `{q}:ground_truth` and per model
-/// `{q}:{model}:predicted|confidence|correct` (empty where that question has no ground truth).
+/// One line per experiment row; per question `{q}:ground_truth` (with label corrections) and per
+/// model `{q}:{model}:predicted|confidence|correct`.
 #[tauri::command]
-pub fn experiment_export_csv(state: State<'_, AppState>, id: String, path: String) -> Result<usize> {
-    let e = state.store.get_experiment(&id)?;
-    let data = state.store.dataset_rows_by_index(&e.dataset_id, &e.row_indices)?;
-    let per_task: Vec<IndexMap<usize, PredictionRow>> = e
-        .config
-        .tasks
-        .iter()
-        .map(|t| Ok(joined_rows(&state, &e, t, &data)?.into_iter().map(|r| (r.row_idx, r)).collect()))
-        .collect::<Result<_>>()?;
-    let mut w = csv::Writer::from_path(&path)?;
-    let mut header = vec!["row".to_string(), "input".into()];
-    for t in &e.config.tasks {
-        header.push(format!("{}:ground_truth", t.id));
-        for m in &e.config.models {
-            header.push(format!("{}:{m}:predicted", t.id));
-            header.push(format!("{}:{m}:confidence", t.id));
-            header.push(format!("{}:{m}:correct", t.id));
-        }
-    }
-    w.write_record(&header)?;
-    for (idx, row) in &data {
-        let mut rec = vec![idx.to_string(), input_text(&e.config, row)];
-        for rows in &per_task {
-            let r = rows.get(idx);
-            rec.push(r.map(|r| r.ground_truth.clone()).unwrap_or_default());
-            for m in &e.config.models {
-                let Some((r, c)) = r.and_then(|r| Some((r, r.by_model.get(m)?))) else {
-                    rec.extend([String::new(), String::new(), String::new()]);
-                    continue;
-                };
-                rec.push(c.predicted.clone().unwrap_or_default());
-                rec.push(c.confidence.map(|v| format!("{v:.4}")).unwrap_or_default());
-                rec.push(match &c.predicted {
-                    Some(p) => (p == &r.ground_truth).to_string(),
-                    None => String::new(),
-                });
-            }
-        }
-        w.write_record(&rec)?;
-    }
-    w.flush()?;
-    Ok(data.len())
+pub async fn experiment_export_csv(state: State<'_, AppState>, id: String, path: String) -> Result<usize> {
+    let store = state.store.clone();
+    blocking(move || {
+        let e = store.get_experiment(&id)?;
+        analysis::export_csv(&store, &e, &path)
+    })
+    .await
+}
+
+// ---- label corrections --------------------------------------------------------------------
+
+/// Correct (or, with the cell's own value, confirm) the ground truth of one cell.
+#[tauri::command]
+pub fn label_correction_set(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    row_idx: usize,
+    column: String,
+    value: String,
+    note: Option<String>,
+) -> Result<()> {
+    state.store.set_label_correction(&dataset_id, row_idx, &column, &value, note.as_deref()).map(|_| ())
+}
+
+#[tauri::command]
+pub fn label_correction_clear(state: State<'_, AppState>, dataset_id: String, row_idx: usize, column: String) -> Result<()> {
+    state.store.clear_label_correction(&dataset_id, row_idx, &column)
+}
+
+#[tauri::command]
+pub fn label_corrections_list(state: State<'_, AppState>, dataset_id: String) -> Result<Vec<LabelCorrection>> {
+    state.store.label_corrections(&dataset_id)
+}
+
+// ---- question sets ------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn question_sets_list(state: State<'_, AppState>) -> Result<Vec<QuestionSetSummary>> {
+    state.store.list_question_sets()
+}
+
+/// One version of a set (latest when `version` is null).
+#[tauri::command]
+pub fn question_set_get(state: State<'_, AppState>, id: String, version: Option<u32>) -> Result<QuestionSet> {
+    state.store.get_question_set(&id, version)
+}
+
+/// Create a set (`id` null) or save a new version (only when the payload changed).
+#[tauri::command]
+pub fn question_set_save(state: State<'_, AppState>, input: QuestionSetInput) -> Result<QuestionSetSummary> {
+    state.store.save_question_set(&input)
+}
+
+#[tauri::command]
+pub fn question_set_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    state.store.delete_question_set(&id)
+}
+
+// ---- settings, budget, track record -------------------------------------------------------
+
+#[tauri::command]
+pub fn settings_get(state: State<'_, AppState>) -> Result<AppSettings> {
+    state.store.settings()
+}
+
+#[tauri::command]
+pub fn settings_save(state: State<'_, AppState>, input: AppSettings) -> Result<AppSettings> {
+    state.store.save_settings(&input)
+}
+
+/// Cloud spend this calendar month (local time) against the monthly budget.
+#[tauri::command]
+pub fn budget_status(state: State<'_, AppState>) -> Result<BudgetStatus> {
+    state.store.budget_status()
+}
+
+/// Each model's best question result across completed experiments, best first.
+#[tauri::command]
+pub async fn models_track_record(state: State<'_, AppState>) -> Result<Vec<TrackRecord>> {
+    let store = state.store.clone();
+    blocking(move || analysis::track_record(&store)).await
 }

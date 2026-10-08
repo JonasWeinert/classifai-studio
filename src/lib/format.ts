@@ -37,6 +37,7 @@ export const price = (perMTok: number) => (perMTok > 0 ? `$${perMTok < 1 ? perMT
 /** Money amounts that are often fractions of a cent. */
 export function usd(v: number) {
   if (v === 0) return "$0";
+  if (v < 0.0001) return "<$0.0001";
   if (v < 0.01) return `$${v.toFixed(4)}`;
   if (v < 1) return `$${v.toFixed(3)}`;
   return `$${v.toFixed(2)}`;

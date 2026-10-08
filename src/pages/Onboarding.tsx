@@ -7,6 +7,7 @@ import { useApp } from "../lib/app";
 import { bytes } from "../lib/format";
 
 const STARTER = "laya";
+const SMALL = "decima:small";
 
 export function Onboarding({ onSkip }: { onSkip: () => void }) {
   const { engine, refreshEngine, models, pull, pulls, refreshModels, go } = useApp();
@@ -27,7 +28,22 @@ export function Onboarding({ onSkip }: { onSkip: () => void }) {
   const running = !!engine?.running;
   const hasModel = models.length > 0;
   const step = !installed ? 0 : !running ? 1 : !hasModel ? 2 : 3;
-  const p = pulls[STARTER];
+  const pulling = pulls[STARTER] ?? pulls[SMALL];
+  // ETA from the observed download rate (bytes since the first progress event).
+  const startRef = useRef<{ t: number; b: number } | null>(null);
+  const [eta, setEta] = useState<number | null>(null);
+  useEffect(() => {
+    if (!pulling?.total) {
+      startRef.current = null;
+      setEta(null);
+      return;
+    }
+    const now = performance.now();
+    if (!startRef.current) startRef.current = { t: now, b: pulling.completed };
+    const secs = (now - startRef.current.t) / 1000;
+    const rate = (pulling.completed - startRef.current.b) / Math.max(secs, 0.001);
+    setEta(secs > 2 && rate > 0 ? (pulling.total - pulling.completed) / rate : null);
+  }, [pulling?.completed, pulling?.total]);
 
   const run = async (kind: "install" | "start") => {
     setBusy(kind);
@@ -95,18 +111,26 @@ export function Onboarding({ onSkip }: { onSkip: () => void }) {
                     )}
                     {active && i === 2 && (
                       <div className="mt-3">
-                        {p ? (
+                        {pulling ? (
                           <div className="space-y-1.5">
-                            <Progress value={p.total ? p.completed / p.total : 0} indeterminate={!p.total} />
+                            <Progress value={pulling.total ? pulling.completed / pulling.total : 0} indeterminate={!pulling.total} />
                             <div className="flex justify-between font-mono text-[11px] text-muted-foreground">
-                              <span>{p.status}</span>
-                              <span>{p.total ? `${bytes(p.completed)} / ${bytes(p.total)}` : ""}</span>
+                              <span>{pulling.status}</span>
+                              <span>
+                                {pulling.total ? `${bytes(pulling.completed)} / ${bytes(pulling.total)}` : ""}
+                                {eta !== null && ` · ~${eta < 60 ? `${Math.max(1, Math.round(eta))} s` : `${Math.round(eta / 60)} min`} left`}
+                              </span>
                             </div>
                           </div>
                         ) : (
-                          <Button variant="primary" onClick={() => pull(STARTER)} icon={<Download className="size-3.5" />}>
-                            Download laya
-                          </Button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button variant="primary" onClick={() => pull(STARTER)} icon={<Download className="size-3.5" />}>
+                              Download laya · 1.5 GB
+                            </Button>
+                            <Button variant="ghost" onClick={() => pull(SMALL)}>
+                              Smaller: decima:small · 0.3 GB
+                            </Button>
+                          </div>
                         )}
                       </div>
                     )}

@@ -25,6 +25,9 @@ pub struct LabelSpec {
     /// Optional natural-language description shown to the model.
     #[serde(default)]
     pub description: Option<String>,
+    /// Other ground-truth spellings that count as this label (matched exactly after trimming).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,9 +274,29 @@ impl TaskSpec {
         }
     }
 
+    /// The label a row's ground-truth cell stands for: the cell (trimmed) equals a label's value or
+    /// one of its aliases. Label corrections are applied to the row before this (see
+    /// [`crate::store::apply_corrections`]).
     pub fn ground_truth(&self, row: &Row) -> Option<String> {
-        let v = row.get(&self.label_column)?.trim().to_string();
-        self.labels.iter().any(|l| l.value == v).then_some(v)
+        self.label_for(row.get(&self.label_column)?)
+    }
+
+    /// The label a raw ground-truth value maps to, if any.
+    pub fn label_for(&self, raw: &str) -> Option<String> {
+        let v = raw.trim();
+        self.labels
+            .iter()
+            .find(|l| l.value == v)
+            .or_else(|| self.labels.iter().find(|l| l.aliases.iter().any(|a| a.trim() == v)))
+            .map(|l| l.value.clone())
+    }
+
+    pub fn positive_label_value(&self) -> Option<&str> {
+        self.positive().map(|l| l.value.as_str())
+    }
+
+    pub fn negative_label_value(&self) -> Option<&str> {
+        self.negative().map(|l| l.value.as_str())
     }
 
     pub fn interpret(&self, answer: &Answer) -> Result<Interpreted> {
@@ -320,8 +343,8 @@ mod tests {
             context: None,
             label_column: "label".into(),
             labels: vec![
-                LabelSpec { value: "spam".into(), description: None },
-                LabelSpec { value: "ham".into(), description: Some("A normal message".into()) },
+                LabelSpec { value: "spam".into(), description: None, aliases: vec![] },
+                LabelSpec { value: "ham".into(), description: Some("A normal message".into()), aliases: vec!["Ham".into(), " not spam ".into()] },
             ],
             positive_label: Some("spam".into()),
             threshold: None,
@@ -365,6 +388,21 @@ mod tests {
         assert_eq!(state(&cols, &row), serde_json::json!({"subject":"Hi","body":"Win now"}));
         assert_eq!(state(&cols[1..], &row), serde_json::json!("Win now"));
         assert_eq!(t.ground_truth(&row).as_deref(), Some("spam"));
+    }
+
+    #[test]
+    fn aliases_map_to_their_label() {
+        let t = binary();
+        assert_eq!(t.label_for(" Ham ").as_deref(), Some("ham"));
+        assert_eq!(t.label_for("not spam").as_deref(), Some("ham"), "aliases are trimmed too");
+        assert_eq!(t.label_for("ham").as_deref(), Some("ham"));
+        assert_eq!(t.label_for("HAM"), None, "exact match only");
+        assert_eq!(t.label_for("Spam"), None);
+        let json = serde_json::to_value(&t.labels).unwrap();
+        assert!(json[0].get("aliases").is_none(), "empty aliases are left out");
+        assert_eq!(json[1]["aliases"][0], "Ham");
+        let back: Vec<LabelSpec> = serde_json::from_value(serde_json::json!([{"value": "x"}])).unwrap();
+        assert!(back[0].aliases.is_empty());
     }
 
     #[test]

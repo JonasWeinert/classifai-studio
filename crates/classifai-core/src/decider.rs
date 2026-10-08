@@ -150,6 +150,9 @@ impl Decider {
                     return Err(Error::invalid("presets are only available for local models"));
                 }
                 let questions = questions.ok_or_else(|| Error::invalid("add at least one question"))?;
+                if let Some(e) = self.store.budget_block()? {
+                    return Err(e);
+                }
                 let (p, m) = self.resolve(provider, name)?;
                 let key = self.key_for(&p)?;
                 let started = Instant::now();
@@ -173,11 +176,15 @@ impl Decider {
     }
 
     /// Load a local model into memory. For a cloud model, check that it can be called (known,
-    /// enabled, key and account id present) without sending a request.
+    /// enabled, key and account id present, monthly budget not used up under a hard stop) without
+    /// sending a request.
     pub async fn load(&self, model: &str) -> Result<()> {
         match parse_model_id(model)? {
             ModelRef::Local(name) => self.ollaya.load(name).await.map(|_| ()),
             ModelRef::Cloud { provider, model } => {
+                if let Some(e) = self.store.budget_block()? {
+                    return Err(e);
+                }
                 let (p, _) = self.resolve(provider, model)?;
                 self.key_for(&p)?;
                 if p.kind == ProviderKind::Cloudflare && p.account_id.as_deref().is_none_or(|a| a.trim().is_empty()) {
@@ -543,5 +550,50 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("only available for local models"));
+    }
+
+    #[tokio::test]
+    async fn budget_hard_stop_blocks_cloud_only() {
+        use crate::store::AppSettings;
+        let (d, _) = decider();
+        d.set_key("typesafe", Some("ts-key-12345678")).unwrap();
+        let spend = |cost: f64| {
+            d.store
+                .log_usage(&UsageEntry {
+                    source: "quick".into(),
+                    experiment_id: None,
+                    model: "@typesafe/jev-latest".into(),
+                    requests: 1,
+                    usage: Usage::default(),
+                    cost_usd: cost,
+                })
+                .unwrap()
+        };
+        spend(0.6);
+        // a budget without the hard stop only reports
+        d.store.save_settings(&AppSettings { monthly_budget_usd: Some(0.5), budget_hard_stop: false }).unwrap();
+        let b = d.store.budget_status().unwrap();
+        assert!(b.exceeded && (b.ratio.unwrap() - 1.2).abs() < 1e-9 && (b.month_spend_usd - 0.6).abs() < 1e-9);
+        d.load("@typesafe/jev-latest").await.unwrap();
+
+        d.store.save_settings(&AppSettings { monthly_budget_usd: Some(0.5), budget_hard_stop: true }).unwrap();
+        let err = d.load("@typesafe/jev-latest").await.unwrap_err();
+        assert_eq!(err.code(), "BUDGET_EXCEEDED");
+        let mut qs = IndexMap::new();
+        qs.insert("q".to_string(), Question::Noul { instructions: Some("?".into()), criteria: None });
+        let err = d.decide("@typesafe/jev-latest", Value::Null, qs.clone(), &UsageContext::quick()).await.unwrap_err();
+        assert_eq!(err.code(), "BUDGET_EXCEEDED");
+        assert!(err.to_string().contains("budget"), "{err}");
+        // local models are never blocked: this fails because nothing listens, not because of the budget
+        let err = d.decide("laya", Value::Null, qs, &UsageContext::quick()).await.unwrap_err();
+        assert_ne!(err.code(), "BUDGET_EXCEEDED");
+
+        // raising the budget lifts the stop
+        d.store.save_settings(&AppSettings { monthly_budget_usd: Some(10.0), budget_hard_stop: true }).unwrap();
+        d.load("@typesafe/jev-latest").await.unwrap();
+        assert!(d.store.save_settings(&AppSettings { monthly_budget_usd: Some(-1.0), budget_hard_stop: true }).is_err());
+        d.store.save_settings(&AppSettings { monthly_budget_usd: None, budget_hard_stop: true }).unwrap();
+        assert_eq!(d.store.budget_status().unwrap().ratio, None);
+        d.load("@typesafe/jev-latest").await.unwrap();
     }
 }

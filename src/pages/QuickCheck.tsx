@@ -1,10 +1,12 @@
 import { cn } from "@/lib/utils";
-import { CornerDownLeft, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { CornerDownLeft, Plus, RotateCcw, Save, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ProbBars } from "../components/charts";
-import { ModelPicker } from "../components/ModelPicker";
-import { Badge, Button, Card, Disclosure, ErrorNote, Input, Kbd, PageHeader, Section, Select, Slider, Spinner, Switch, Textarea } from "../components/ui";
-import { api, errorMessage } from "../lib/api";
+import { ModelMenu, ModelPicker } from "../components/ModelPicker";
+import { Badge, Button, Card, Disclosure, ErrorNote, FormRow, Input, Kbd, Modal, PageHeader, Section, Select, Slider, Spinner, Switch, Textarea } from "../components/ui";
+import { api } from "../lib/api";
+import { handoff } from "../lib/handoff";
+import { load, save } from "../lib/persist";
 import { useApp, useAsync } from "../lib/app";
 import { modelColor, ms, pct, shortModel, usd } from "../lib/format";
 import { composeInstructions, slugId } from "../lib/questions";
@@ -105,25 +107,50 @@ function buildQuestion(q: QDraft, shared: string): AnyQuestion | null {
   }
 }
 
-type Slot = { model: string; result?: QuickResult; error?: string; loading: boolean };
+type Slot = { model: string; result?: QuickResult; error?: unknown; loading: boolean };
+
+interface Saved {
+  text: string;
+  asJson: boolean;
+  shared: string;
+  qs: QDraft[];
+  mode: Mode;
+  preset: string;
+  selected: string[];
+  slots: Slot[];
+  titles: Record<string, string>;
+  ranWith: string | null;
+  set: { id: string; name: string; version: number } | null;
+}
 type Mode = "custom" | "preset";
 
 export function QuickCheck() {
-  const { models, engine } = useApp();
-  const [text, setText] = useState(SAMPLE_TEXT);
-  const [asJson, setAsJson] = useState(false);
-  const [shared, setShared] = useState("");
-  const [qs, setQs] = useState<QDraft[]>(EXAMPLE);
-  const [mode, setMode] = useState<Mode>("custom");
-  const [preset, setPreset] = useState("triage");
-  const [selected, setSelected] = useState<string[]>([]);
-  const [slots, setSlots] = useState<Slot[]>([]);
-  const [titles, setTitles] = useState<Record<string, string>>({});
+  const { models, engine, cloudModels, toast, refreshBudget } = useApp();
+  // Draft and results survive navigation and restarts (stored per user on this Mac).
+  const saved = useMemo(() => load<Saved | null>("quick", null), []);
+  const incoming = useMemo(() => handoff.take(), []);
+  const [text, setText] = useState(incoming?.text ?? saved?.text ?? SAMPLE_TEXT);
+  const [asJson, setAsJson] = useState(incoming?.asJson ?? saved?.asJson ?? false);
+  const [shared, setShared] = useState(saved?.shared ?? "");
+  const [qs, setQs] = useState<QDraft[]>(() => (saved?.qs?.length ? saved.qs.map((q) => ({ ...q, key: nextKey++ })) : EXAMPLE()));
+  const [mode, setMode] = useState<Mode>(saved?.mode ?? "custom");
+  const [preset, setPreset] = useState(saved?.preset ?? "triage");
+  const [selected, setSelected] = useState<string[]>(saved?.selected ?? []);
+  const [slots, setSlots] = useState<Slot[]>(incoming ? [] : (saved?.slots ?? []).filter((x) => !x.loading));
+  const [titles, setTitles] = useState<Record<string, string>>(saved?.titles ?? {});
+  const [ranWith, setRanWith] = useState<string | null>(incoming ? null : saved?.ranWith ?? null);
+  const [set, setSet] = useState<{ id: string; name: string; version: number } | null>(saved?.set ?? null);
+  const [saving, setSaving] = useState(false);
+  const sets = useAsync(() => api.questionSets(), []);
   const presets = useAsync(() => (engine?.running ? api.presets() : Promise.resolve([])), [engine?.running]);
 
   useEffect(() => {
-    if (selected.length === 0 && models.length) setSelected([models[0].name]);
-  }, [models, selected.length]);
+    if (selected.length === 0 && (models.length || cloudModels.length)) setSelected([models[0]?.name ?? cloudModels[0].id]);
+  }, [models, cloudModels, selected.length]);
+
+  useEffect(() => {
+    save("quick", { text, asJson, shared, qs, mode, preset, selected, slots, titles, ranWith, set } satisfies Saved);
+  }, [text, asJson, shared, qs, mode, preset, selected, slots, titles, ranWith, set]);
 
   // Question ids derive from their text; the map keeps ids unique and readable.
   const built = useMemo(() => {
@@ -137,6 +164,9 @@ export function QuickCheck() {
     return out;
   }, [qs, shared]);
 
+  // Results are "outdated" once the input, questions or models differ from the last run.
+  const signature = JSON.stringify({ text, asJson, mode, preset, q: mode === "custom" ? built.map((b) => b.q) : null });
+  const outdated = slots.length > 0 && ranWith !== null && ranWith !== signature && !slots.some((x) => x.loading);
   const invalid = built.filter((b) => !b.q).length;
   const canRun = !!text.trim() && selected.length > 0 && (mode === "preset" ? !!preset : built.length > 0 && invalid === 0);
   const running = slots.some((s) => s.loading);
@@ -147,16 +177,26 @@ export function QuickCheck() {
     const questions = Object.fromEntries(built.map((b) => [b.id, b.q!]));
     setTitles(Object.fromEntries(built.map((b) => [b.id, b.title])));
     setSlots(order.map((m) => ({ model: m, loading: true })));
-    // Models run one after another (each may need loading); all questions go in one request.
-    for (const model of order) {
+    setRanWith(signature);
+    const one = async (model: string) => {
       try {
         const result = await api.quickClassify({ model, state: text, as_json: asJson, ...(mode === "preset" ? { preset } : { questions }) });
         setSlots((s) => s.map((x) => (x.model === model ? { model, result, loading: false } : x)));
       } catch (e) {
-        setSlots((s) => s.map((x) => (x.model === model ? { model, error: errorMessage(e), loading: false } : x)));
+        setSlots((s) => s.map((x) => (x.model === model ? { model, error: e, loading: false } : x)));
       }
-    }
-  }, [asJson, built, canRun, mode, preset, running, selected, text]);
+    };
+    // Local models run one after another (each may need loading into memory); cloud models run alongside.
+    const local = order.filter((m) => !m.startsWith("@"));
+    const cloud = order.filter((m) => m.startsWith("@"));
+    await Promise.all([
+      (async () => {
+        for (const m of local) await one(m);
+      })(),
+      ...cloud.map(one),
+    ]);
+    if (cloud.length) refreshBudget();
+  }, [asJson, built, canRun, mode, preset, refreshBudget, running, selected, signature, text]);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -175,14 +215,15 @@ export function QuickCheck() {
     <>
       <PageHeader
         title="Quick Check"
-        subtitle="Ask several questions about one entry and compare models side by side."
+        subtitle={set ? `Question set “${set.name}” · v${set.version}` : "Ask several questions about one entry and compare models side by side."}
         actions={
           <>
-            <Button variant="ghost" size="sm" icon={<RotateCcw className="size-3" />} onClick={() => { setQs(EXAMPLE()); setText(SAMPLE_TEXT); setShared(""); setSlots([]); }}>
+            <Button variant="ghost" size="sm" icon={<RotateCcw className="size-3" />} onClick={() => { setQs(EXAMPLE()); setText(SAMPLE_TEXT); setShared(""); setSlots([]); setSet(null); setRanWith(null); }}>
               Reset
             </Button>
+            <ModelMenu value={selected} onChange={setSelected} colors={modelColor} />
             <Button variant="primary" onClick={run} disabled={!canRun} loading={running}>
-              Classify
+              {running ? `${slots.filter((x) => !x.loading).length} of ${slots.length}` : "Classify"}
               <span className="ml-1 flex items-center gap-0.5 opacity-70">
                 <span className="text-[11px]">⌘</span>
                 <CornerDownLeft className="size-3" />
@@ -212,6 +253,26 @@ export function QuickCheck() {
             title="Questions"
             subtitle={mode === "custom" ? "All questions are answered in a single pass per model." : "Ollaya's built-in question sets."}
             actions={
+              <div className="flex items-center gap-2">
+              {mode === "custom" && (
+                <>
+                  <Select
+                    className="min-w-[9rem]"
+                    placeholder="Load set…"
+                    value={set?.id ?? ""}
+                    onChange={async (id) => {
+                      const q = await api.questionSet(id);
+                      setShared(q.payload.context ?? "");
+                      setQs(q.payload.questions.map((x) => ({ ...x, key: nextKey++ })));
+                      setSet({ id: q.id, name: q.name, version: q.version });
+                    }}
+                    options={(sets.data ?? []).map((x) => ({ value: x.id, label: `${x.name} · v${x.version}` }))}
+                  />
+                  <Button size="sm" icon={<Save className="size-3" />} onClick={() => setSaving(true)}>
+                    {set ? "Save" : "Save as set"}
+                  </Button>
+                </>
+              )}
               <Select
                 className="min-w-[8rem]"
                 value={mode}
@@ -221,6 +282,7 @@ export function QuickCheck() {
                   { value: "preset", label: "Preset" },
                 ]}
               />
+              </div>
             }
           >
             {mode === "preset" ? (
@@ -246,9 +308,11 @@ export function QuickCheck() {
             )}
           </Section>
 
-          <Section title="Models" subtitle={`${selected.length} selected`}>
-            <ModelPicker value={selected} onChange={setSelected} colors={modelColor} />
-          </Section>
+          {selected.length === 0 && (
+            <Section title="Models">
+              <ModelPicker value={selected} onChange={setSelected} colors={modelColor} />
+            </Section>
+          )}
         </div>
 
         {/* ---- results ---- */}
@@ -265,15 +329,84 @@ export function QuickCheck() {
             </div>
           ) : (
             <div className="space-y-3">
+              {outdated && (
+                <div className="flex items-center justify-between rounded-[12px] bg-warn-soft px-4 py-2 text-[12.5px] text-warn fade-up">
+                  Inputs changed since these results.
+                  <button className="font-medium underline-offset-2 hover:underline" onClick={run}>
+                    Re-run ⌘↩
+                  </button>
+                </div>
+              )}
+              <div className={cn("space-y-3 transition-opacity duration-300", outdated && "opacity-45")}>
               {slots.length > 1 && <Consensus slots={slots} titles={titles} />}
               {slots.map((s, i) => (
                 <ResultCard key={s.model} slot={s} titles={titles} color={modelColor(selected.indexOf(s.model) >= 0 ? selected.indexOf(s.model) : i)} />
               ))}
+              </div>
             </div>
           )}
         </div>
       </div>
+      <SaveSetSheet
+        open={saving}
+        onClose={() => setSaving(false)}
+        current={set}
+        onSave={async (name, description, asNew) => {
+          const summary = await api.questionSetSave({ id: asNew ? null : set?.id, name, description, payload: { context: shared, questions: qs.map(({ key: _k, ...q }) => q) } });
+          setSet({ id: summary.id, name: summary.name, version: summary.version });
+          sets.reload();
+          toast(`Saved “${summary.name}” · v${summary.version}`, "good");
+        }}
+      />
     </>
+  );
+}
+
+function SaveSetSheet({ open, onClose, current, onSave }: { open: boolean; onClose: () => void; current: { id: string; name: string; version: number } | null; onSave: (name: string, description: string, asNew: boolean) => Promise<void> }) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (open) setName(current?.name ?? "");
+  }, [open, current]);
+  const submit = async (asNew: boolean) => {
+    setBusy(true);
+    try {
+      await onSave(name.trim(), description.trim(), asNew);
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={current ? `Save “${current.name}”` : "Save as question set"}
+      footer={
+        <>
+          {current && (
+            <Button className="mr-auto" disabled={!name.trim()} onClick={() => submit(true)}>
+              Save as new set
+            </Button>
+          )}
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" disabled={!name.trim()} loading={busy} onClick={() => submit(false)}>
+            {current ? `Save v${current.version + 1}` : "Save"}
+          </Button>
+        </>
+      }
+    >
+      <p className="mb-3 text-[12.5px] text-muted-foreground">Question sets keep questions, descriptions and context together. Reuse them here or start an experiment from one; every save is a new version.</p>
+      <div className="-ml-3">
+        <FormRow label="Name:" labelWidth={100}>
+          <Input value={name} onChange={setName} placeholder="e.g. Ticket triage" autoFocus />
+        </FormRow>
+        <FormRow label="Description:" labelWidth={100}>
+          <Input value={description} onChange={setDescription} placeholder="optional" />
+        </FormRow>
+      </div>
+    </Modal>
   );
 }
 
@@ -281,7 +414,7 @@ function QuestionEditor({ q, index, id, invalid, onChange, onRemove }: { q: QDra
   const usesOptions = q.kind === "choice" || q.kind === "multi" || q.kind === "rank";
   const hint = KINDS.find((k) => k.value === q.kind)!.hint;
   return (
-    <div className="py-4 first:pt-0 fade-up">
+    <div className="group/q py-4 first:pt-0 fade-up">
       <div className="mb-2 flex items-center gap-2">
         <span className="w-5 text-[12px] font-semibold text-faint tnum">{index + 1}</span>
         <Input className="flex-1" value={q.text} onChange={(text) => onChange({ text })} placeholder={q.kind === "noul" ? "A statement, e.g. The study is a randomised controlled trial." : "Question, e.g. Which topics does this abstract cover?"} />
@@ -291,7 +424,7 @@ function QuestionEditor({ q, index, id, invalid, onChange, onRemove }: { q: QDra
       <div className="ml-7 space-y-2">
         <div className="flex items-center gap-2 text-[11.5px] text-faint">
           {hint}
-          {id && <span className="font-mono">· {id}</span>}
+          {id && <span className="font-mono opacity-0 transition-opacity group-hover/q:opacity-100">· {id}</span>}
           {invalid && <span className="text-warn">· incomplete</span>}
         </div>
 
@@ -440,7 +573,7 @@ function ResultCard({ slot, color, titles }: { slot: Slot; color: string; titles
       </div>
       <div className="px-4 pt-2 pb-4">
         {slot.loading && !r && <div className="h-14 rounded-[8px] shimmer" />}
-        {slot.error && <ErrorNote>{slot.error}</ErrorNote>}
+        {slot.error !== undefined && <ErrorNote error={slot.error} />}
         {r && (
           <div className="divide-y divide-border">
             {Object.entries(r.answers).map(([id, a]) => (

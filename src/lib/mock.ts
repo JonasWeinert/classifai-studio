@@ -68,7 +68,7 @@ const installed: LocalModel[] = fresh ? [] : [
 
 // ---- cloud providers --------------------------------------------------------------------------
 const cm = (provider_id: string, model: string, display_name: string, description: string, input: number, enabled = true): CloudModel => ({
-  id: `@${provider_id}/${model}`, provider_id, model, display_name, description, input_price_per_mtok: input, output_price_per_mtok: 0, enabled, builtin: true,
+  id: `@${provider_id}/${model}`, provider_id, model, display_name, description, input_price_per_mtok: input, output_price_per_mtok: 0, enabled, builtin: true, default_input_price_per_mtok: input, default_output_price_per_mtok: 0,
 });
 const providers: Provider[] = [
   { id: "typesafe", kind: "typesafe", name: "TypeSafe Jev", base_url: null, account_id: null, has_key: true, key_hint: "…a91f", builtin: true,
@@ -97,7 +97,7 @@ const demoRows: Row[] = Array.from({ length: 160 }, (_, i) => {
   const d = departments[i % 4];
   const p = phrases[d][Math.floor(rand() * 5)];
   const t = tails[Math.floor(rand() * tails.length)];
-  return { id: String(1000 + i), subject: p.split(" ").slice(0, 4).join(" ") + "…", body: p + "." + t, department: d, priority: rand() > 0.7 ? "high" : "normal" };
+  return { id: String(1000 + i), subject: p.split(" ").slice(0, 4).join(" ") + "…", body: p + "." + t, department: i === 148 || i === 152 ? "Billing " : i === 156 ? "billing." : d, priority: rand() > 0.7 ? "high" : "normal" };
 });
 
 const datasets: Dataset[] = [
@@ -122,7 +122,7 @@ function fakePred(model: string, q: string, labels: string[], gt: string, idx: n
 
 const gtOf = (row: Row, t: TaskSpec) => {
   const v = (row[t.label_column] ?? "").trim();
-  return t.labels.some((l) => l.value === v) ? v : null;
+  return t.labels.find((l) => l.value === v || l.aliases?.includes(v))?.value ?? null;
 };
 
 function predictRow(id: string, e: Experiment, m: string, i: number) {
@@ -161,7 +161,23 @@ function seedExperiment(name: string, models: string[], n: number) {
   return id;
 }
 seedExperiment("Routing baseline", ["laya", "nli", "decider:0.8b", "@typesafe/jev-latest"], 120);
+seedExperiment("Routing v2 (with context)", ["laya", "nli", "@typesafe/jev-latest"], 120);
 usageLog.push({ model: "@typesafe/jev-latest", tokens: 120 * 140, cost: (120 * 140 * 0.042) / 1e6, exp: "exp-1" }, { model: "laya", tokens: 120 * 140, cost: 0, exp: "exp-1" });
+
+/** Cohen's kappa approximation with a uniform chance rate (mock only). */
+const kappaFrom = (agree: number, k: number) => (agree - 1 / k) / (1 - 1 / k);
+
+const corrections: { dataset: string; row_idx: number; column: string; original: string; value: string; note: string | null; at: string }[] = [];
+const questionSets: { id: string; name: string; description: string; version: number; payload: any; updated_at: string }[] = [
+  {
+    id: "transactions", name: "Transaction coding", description: "Category + recurring for bank transactions", version: 2, updated_at: new Date(Date.now() - 864e5).toISOString(),
+    payload: { context: "Bank transactions from a German personal account, amounts in EUR.", questions: [
+      { kind: "choice", text: "Which spending category is this?", context: "", options: [{ name: "groceries", description: "Supermarkets and food shopping" }, { name: "software", description: "Apps, SaaS and subscriptions to digital tools" }, { name: "dining", description: "Restaurants, cafés, delivery" }], threshold: 0.5, yes: "", no: "", levels: [], values: "", unit: "" },
+      { kind: "noul", text: "This is a recurring payment.", context: "", options: [], threshold: 0.5, yes: "Subscription, rent, contract or regular bill", no: "One-off purchase", levels: [], values: "", unit: "" },
+    ] },
+  },
+];
+let settings = { monthly_budget_usd: 5 as number | null, budget_hard_stop: false };
 
 function report(e: Experiment, question?: string): Report {
   const task = e.config.tasks.find((t) => t.id === question) ?? e.config.tasks[0];
@@ -197,6 +213,7 @@ function report(e: Experiment, question?: string): Report {
       mean_confidence: ok.reduce((a, p) => a + (p.confidence ?? 0), 0) / Math.max(1, ok.length),
       ece, latency_p50_ms: q(0.5), latency_p95_ms: q(0.95), latency_mean_ms: lat.reduce((a, b) => a + b, 0) / Math.max(1, lat.length),
       per_class, confusion, calibration: bins,
+      kappa: kappaFrom(ok.filter((p) => p.predicted === p.gt).length / Math.max(1, ok.length), labels.length),
     };
   });
   const agreement = e.config.models.map((a) => e.config.models.map((b) => {
@@ -204,7 +221,11 @@ function report(e: Experiment, question?: string): Report {
     const both = pa.filter((p) => pb.has(p.row_idx));
     return both.length ? both.filter((p) => pb.get(p.row_idx) === p.predicted).length / both.length : 0;
   }));
-  return { question_id: task.id, labels, models, agreement };
+  const pairwise_kappa = agreement.map((row) => row.map((a) => kappaFrom(a, labels.length)));
+  const offDiag = pairwise_kappa.flatMap((r, i) => r.filter((_, j) => j !== i));
+  const fleiss_kappa = offDiag.length ? offDiag.reduce((a, b) => a + b, 0) / offDiag.length : null;
+  const reviewed_rows = corrections.filter((c) => c.dataset === e.dataset_id && c.column === task.label_column).length;
+  return { question_id: task.id, labels, models, agreement, pairwise_kappa, fleiss_kappa, reviewed_rows };
 }
 
 async function runExperiment(id: string) {
@@ -332,6 +353,66 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
       });
       return r([...rows.values()].sort((a, b) => b.cost_usd - a.cost_usd));
     }
+    case "dataset_import_text": {
+      const d: Dataset = { id: `ds-${datasets.length + 1}`, name: args.name || "pasted", source: null, columns: datasets[0].columns, row_count: demoRows.length, created_at: new Date().toISOString() };
+      datasets.unshift(d); rowsByDataset[d.id] = demoRows; return r(d);
+    }
+    case "experiment_estimate": {
+      const c = args.config as ExperimentConfig;
+      const rows = Math.min(c.sample_size ?? 160, 160);
+      const per_model = c.models.map((m) => {
+        const cloud = cloudFor(m);
+        const tok = rows * (60 + c.tasks.length * 25);
+        return { model: m, est_input_tokens: tok, est_cost_usd: cloud ? (tok * cloud.input_price_per_mtok) / 1e6 : 0, est_seconds: (rows * (speed[m] ?? 300)) / 1000 / (c.concurrency ?? 4) };
+      });
+      return r({ rows, requests: rows * c.models.length, per_model, total_cost_usd: per_model.reduce((a, x) => a + x.est_cost_usd, 0), total_seconds: per_model.reduce((a, x) => a + x.est_seconds, 0) });
+    }
+    case "experiment_threshold_curve": {
+      const points = Array.from({ length: 19 }, (_, i) => {
+        const t = (i + 1) / 20;
+        const recall = Math.min(1, 1.05 - t * 0.8), precision = Math.min(1, 0.45 + t * 0.6);
+        return { threshold: t, precision, recall, f1: (2 * precision * recall) / (precision + recall), accuracy: 0.6 + 0.3 * Math.sin(t * Math.PI) };
+      });
+      const e = experiments.find((x) => x.id === args.id)!;
+      return r({ points, current: e.config.tasks.find((t) => t.id === args.question)?.threshold ?? 0.5 });
+    }
+    case "experiment_set_threshold": {
+      const e = experiments.find((x) => x.id === args.id)!;
+      const t = e.config.tasks.find((x) => x.id === args.question); if (t) t.threshold = args.threshold;
+      return r(undefined);
+    }
+    case "experiment_review_queue": return invoke<T>("experiment_predictions", { id: args.id, question: args.question, filter: args.strategy === "disagree" ? "disagree" : "wrong", offset: args.offset, limit: args.limit });
+    case "experiment_export_report": return r(args.path);
+    case "label_corrections_list": return r(corrections.filter((c) => c.dataset === args.datasetId));
+    case "label_correction_set": {
+      const rows = rowsByDataset[args.datasetId];
+      const i = corrections.findIndex((c) => c.dataset === args.datasetId && c.row_idx === args.rowIdx && c.column === args.column);
+      const entry = { dataset: args.datasetId, row_idx: args.rowIdx, column: args.column, original: rows[args.rowIdx][args.column], value: args.value, note: args.note ?? null, at: new Date().toISOString() };
+      if (i >= 0) corrections[i] = entry; else corrections.push(entry);
+      return r(undefined);
+    }
+    case "label_correction_clear": { const i = corrections.findIndex((c) => c.dataset === args.datasetId && c.row_idx === args.rowIdx && c.column === args.column); if (i >= 0) corrections.splice(i, 1); return r(undefined); }
+    case "question_sets_list": return r(questionSets.map(({ payload, ...q }) => ({ ...q, question_count: payload.questions.length })));
+    case "question_set_get": return r(questionSets.find((q) => q.id === args.id));
+    case "question_set_save": {
+      const inp = args.input;
+      let q = questionSets.find((x) => x.id === inp.id);
+      if (!q) { q = { id: inp.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name: inp.name, description: inp.description ?? "", version: 0, payload: inp.payload, updated_at: "" }; questionSets.unshift(q); }
+      Object.assign(q, { name: inp.name, description: inp.description ?? q.description, payload: inp.payload, version: q.version + 1, updated_at: new Date().toISOString() });
+      return r({ ...q, question_count: q.payload.questions.length });
+    }
+    case "question_set_delete": { const i = questionSets.findIndex((q) => q.id === args.id); if (i >= 0) questionSets.splice(i, 1); return r(undefined); }
+    case "settings_get": return r({ ...settings });
+    case "settings_save": settings = { ...args.input }; return r({ ...settings });
+    case "budget_status": {
+      const spend = usageLog.reduce((a, u) => a + u.cost, 0);
+      const b = settings.monthly_budget_usd;
+      return r({ month_spend_usd: spend, budget_usd: b, ratio: b ? spend / b : null, exceeded: !!b && spend >= b });
+    }
+    case "models_track_record": return r([
+      { model: "laya", experiment_id: "exp-1", experiment_name: "Routing baseline", question_id: "department", macro_f1: 0.91, accuracy: 0.92 },
+      { model: "@typesafe/jev-latest", experiment_id: "exp-1", experiment_name: "Routing baseline", question_id: "department", macro_f1: 0.94, accuracy: 0.94 },
+    ]);
     case "presets_list": return r([{ name: "triage", builtin: true, description: "Support tickets: intent, urgency, frustration, refund request, churn risk", questions: ["intent", "is_urgent", "frustration", "churn_risk"] }, { name: "moderation", builtin: true, description: "Content moderation", questions: ["toxic", "category"] }]);
     case "quick_classify": {
       const q = args.req.questions ?? presetQuestions[args.req.preset] ?? presetQuestions.triage;
@@ -349,7 +430,12 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
     }
     case "dataset_list": return r(datasets);
     case "dataset_get": return r(datasets.find((d) => d.id === args.id));
-    case "dataset_rows": { const rows = rowsByDataset[args.id] ?? []; return r({ rows: rows.slice(args.offset, args.offset + args.limit).map((row, i) => [args.offset + i, row]), total: rows.length }); }
+    case "dataset_rows": {
+      let rows = (rowsByDataset[args.id] ?? []).map((row, i) => [i, row] as [number, Row]);
+      if (args.search) { const q = String(args.search).toLowerCase(); rows = rows.filter(([, row]) => Object.values(row).some((v) => v.toLowerCase().includes(q))); }
+      if (args.sortColumn) rows = [...rows].sort((a, b) => (a[1][args.sortColumn] ?? "").localeCompare(b[1][args.sortColumn] ?? "", undefined, { numeric: true }) * (args.sortDesc ? -1 : 1));
+      return r({ rows: rows.slice(args.offset, args.offset + args.limit), total: rows.length });
+    }
     case "dataset_value_counts": {
       const counts = new Map<string, number>();
       (rowsByDataset[args.id] ?? []).forEach((row) => { const v = (row[args.column] ?? "").trim(); counts.set(v, (counts.get(v) ?? 0) + 1); });
@@ -385,7 +471,8 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
           }));
           const cols = e.config.input_columns;
           const st = cols.length === 1 ? rows[i][cols[0]] : JSON.stringify(Object.fromEntries(cols.map((c) => [c, rows[i][c]])));
-          return { row_idx: i, input: st, ground_truth: gtOf(rows[i], task)!, by_model };
+          const corr = corrections.find((c) => c.dataset === e.dataset_id && c.row_idx === i && c.column === task.label_column);
+          return { row_idx: i, input: st, ground_truth: corr?.value ?? gtOf(rows[i], task)!, by_model, corrected: !!corr, original_ground_truth: corr?.original ?? null, review_note: corr?.note ?? null };
         });
       const f: string = args.filter;
       const filtered = all.filter((row) => {

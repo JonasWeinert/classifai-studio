@@ -20,6 +20,9 @@ use crate::{Error, Result};
 
 pub const DEFAULT_CONCURRENCY: usize = 4;
 
+/// Seed of the deterministic row sample (Fisher–Yates with xorshift64).
+pub const SAMPLE_SEED: u64 = 0x5EED_C1A5;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RunEvent {
     pub experiment_id: String,
@@ -30,10 +33,11 @@ pub struct RunEvent {
     pub message: Option<String>,
 }
 
-/// Rows where at least one question's ground truth is one of its labels, sampled deterministically.
+/// Rows where at least one question's ground truth (after label corrections and aliases) is one of
+/// its labels, sampled deterministically.
 pub fn plan_rows(store: &Store, config: &ExperimentConfig) -> Result<Vec<usize>> {
     config.validate()?;
-    let rows = store.dataset_rows(&config.dataset_id, 0, i64::MAX as usize)?;
+    let rows = store.corrected_rows(&config.dataset_id, None)?;
     let mut eligible: Vec<usize> = rows
         .iter()
         .filter(|(_, r)| config.has_ground_truth(r))
@@ -43,7 +47,7 @@ pub fn plan_rows(store: &Store, config: &ExperimentConfig) -> Result<Vec<usize>>
         return Err(Error::invalid("no rows have a ground-truth value matching the chosen labels"));
     }
     if let Some(n) = config.sample_size.filter(|&n| n > 0 && n < eligible.len()) {
-        shuffle(&mut eligible, 0x5EED_C1A5);
+        shuffle(&mut eligible, SAMPLE_SEED);
         eligible.truncate(n);
         eligible.sort_unstable();
     }
@@ -67,7 +71,7 @@ pub async fn execute(
     let questions = config.questions();
     let total = exp.row_indices.len();
     let concurrency = exp.config.concurrency.unwrap_or(DEFAULT_CONCURRENCY).clamp(1, 32);
-    let rows = store.dataset_rows_by_index(&exp.dataset_id, &exp.row_indices)?;
+    let rows = store.corrected_rows(&exp.dataset_id, Some(&exp.row_indices))?;
     let existing: HashSet<(String, usize)> =
         store.predictions(&experiment_id)?.into_iter().map(|p| (p.model, p.row_idx)).collect();
 
@@ -92,8 +96,13 @@ pub async fn execute(
             continue;
         }
         emit(Some(model), done, ExperimentStatus::Running, Some(format!("Loading {model}…")));
+        // For a cloud model this also checks the monthly budget (hard stop): when it is used up,
+        // the model's remaining rows get that error without a single request.
         if let Err(e) = decider.load(model).await {
-            let msg = format!("{model} could not be loaded: {e}");
+            let msg = match e.code() {
+                "BUDGET_EXCEEDED" => e.to_string(),
+                _ => format!("{model} could not be loaded: {e}"),
+            };
             for (idx, row) in &rows {
                 if existing.contains(&(model.clone(), *idx)) {
                     continue;
@@ -239,7 +248,7 @@ mod tests {
             instructions: "?".into(),
             context: None,
             label_column: column.into(),
-            labels: labels.iter().map(|v| LabelSpec { value: v.to_string(), description: None }).collect(),
+            labels: labels.iter().map(|v| LabelSpec { value: v.to_string(), description: None, aliases: vec![] }).collect(),
             positive_label: None,
             threshold: None,
         }
