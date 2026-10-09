@@ -413,6 +413,8 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
       { model: "laya", experiment_id: "exp-1", experiment_name: "Routing baseline", question_id: "department", macro_f1: 0.91, accuracy: 0.92 },
       { model: "@typesafe/jev-latest", experiment_id: "exp-1", experiment_name: "Routing baseline", question_id: "department", macro_f1: 0.94, accuracy: 0.94 },
     ]);
+    case "preset_show": return r(presetQuestions[args.name] ?? presetQuestions.triage);
+    case "save_text_file": return r(undefined);
     case "presets_list": return r([{ name: "triage", builtin: true, description: "Support tickets: intent, urgency, frustration, refund request, churn risk", questions: ["intent", "is_urgent", "frustration", "churn_risk"] }, { name: "moderation", builtin: true, description: "Content moderation", questions: ["toxic", "category"] }]);
     case "quick_classify": {
       const q = args.req.questions ?? presetQuestions[args.req.preset] ?? presetQuestions.triage;

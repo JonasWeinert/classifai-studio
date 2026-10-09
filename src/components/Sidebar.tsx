@@ -10,7 +10,7 @@ const SECTIONS: { title: string; items: Item[] }[] = [
   {
     title: "Classify",
     items: [
-      { page: "quick", label: "Quick Check", icon: <Zap />, match: ["quick"] },
+      { page: "quick", label: "Playground", icon: <Zap />, match: ["quick"] },
       { page: "datasets", label: "Datasets", icon: <Database />, match: ["datasets", "dataset"] },
       { page: "experiments", label: "Experiments", icon: <FlaskConical />, match: ["experiments", "experiment", "new-experiment", "compare", "review"] },
     ],
@@ -25,7 +25,7 @@ const SECTIONS: { title: string; items: Item[] }[] = [
 ];
 
 export function Sidebar() {
-  const { route, go, engine, models, cloudModels, pulls, budget } = useApp();
+  const { route, go, engine, models, cloudModels, pulls, budget, sidebarOpen } = useApp();
   const pulling = Object.keys(pulls).length;
   const navRef = useRef<HTMLDivElement>(null);
   const [hl, setHl] = useState<{ top: number; height: number } | null>(null);
@@ -51,7 +51,16 @@ export function Sidebar() {
   const over = budget?.ratio != null && budget.ratio >= 0.8;
 
   return (
-    <aside className="sidebar flex w-[212px] shrink-0 flex-col border-r border-border">
+    // The outer aside animates its width; the inner column keeps a fixed width so nothing reflows mid-animation.
+    <aside
+      aria-hidden={!sidebarOpen}
+      inert={!sidebarOpen}
+      className={cn(
+        "sidebar shrink-0 overflow-hidden transition-[width] duration-300 ease-[var(--ease-out)]",
+        sidebarOpen ? "w-[212px] border-r border-border" : "w-0 border-r-0",
+      )}
+    >
+    <div className={cn("flex h-full w-[212px] flex-col transition-opacity duration-200", sidebarOpen ? "opacity-100 delay-75" : "opacity-0")}>
       <div className="titlebar h-[52px] shrink-0" />
 
       <button
@@ -115,6 +124,7 @@ export function Sidebar() {
           </span>
         </button>
       </div>
+    </div>
     </aside>
   );
 }

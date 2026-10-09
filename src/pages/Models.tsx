@@ -215,7 +215,7 @@ function CloudProviders() {
     <>
       <div className="mb-6 flex items-center justify-between gap-4 rounded-[12px] bg-card px-4 py-3 text-[12.5px] text-muted-foreground">
         <span>
-          Cloud models are used like local ones — in Quick Check and experiments. Requests send the input text to the provider. Keys are stored in your macOS Keychain.
+          Cloud models are used like local ones — in Playground and experiments. Requests send the input text to the provider. Keys are stored in your macOS Keychain.
         </span>
         <Button size="sm" icon={<Plus className="size-3" />} onClick={() => setEditing("new")}>
           Custom endpoint

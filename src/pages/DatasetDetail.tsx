@@ -8,7 +8,7 @@ import { useApp, useAsync } from "../lib/app";
 import { guessInputColumns, guessLabelColumn } from "../lib/columns";
 import { ago, pct } from "../lib/format";
 import type { Row, ValueCount } from "../lib/types";
-import { openInQuickCheck } from "../lib/insights";
+import { openInPlayground } from "../lib/insights";
 
 const PAGE = 50;
 
@@ -63,7 +63,7 @@ export function DatasetDetail({ id }: { id: string }) {
     setOffset(0);
     setSort((s) => (s?.column !== c ? { column: c, desc: false } : !s.desc ? { column: c, desc: true } : null));
   };
-  const openRow = (r: Row) => openInQuickCheck(go, textCols.length === 1 ? r[textCols[0]] ?? "" : JSON.stringify(Object.fromEntries(textCols.map((c) => [c, r[c] ?? ""]))));
+  const openRow = (r: Row) => openInPlayground(go, textCols.length === 1 ? r[textCols[0]] ?? "" : JSON.stringify(Object.fromEntries(textCols.map((c) => [c, r[c] ?? ""]))));
 
   const rename = async () => {
     const name = renaming?.trim();
@@ -196,8 +196,8 @@ export function DatasetDetail({ id }: { id: string }) {
                     <td className="border-b border-border px-3 py-1.5 font-mono text-[11px] text-faint tnum">
                       <span className="flex items-center gap-1">
                         <span className="min-w-[2ch]">{i + 1}</span>
-                        <Tooltip content="Open in Quick Check">
-                          <button onClick={() => openRow(r)} aria-label="Open in Quick Check" className="grid size-5 place-items-center rounded-[5px] opacity-0 group-hover:opacity-100 hover:bg-sel hover:text-foreground focus-visible:opacity-100">
+                        <Tooltip content="Open in Playground">
+                          <button onClick={() => openRow(r)} aria-label="Open in Playground" className="grid size-5 place-items-center rounded-[5px] opacity-0 group-hover:opacity-100 hover:bg-sel hover:text-foreground focus-visible:opacity-100">
                             <SquareArrowOutUpRight className="size-3" />
                           </button>
                         </Tooltip>

@@ -3,7 +3,7 @@
 Classify data with local **decision models** and compare them on your own ground truth.
 Built with Tauri 2 (Rust + React), powered by [Ollaya](https://github.com/ollaya-dev/ollaya).
 
-- **Quick check:** paste one entry, define labels (or yes/no, a scale, a preset) and compare models side by side.
+- **Playground:** paste one entry, define labels (or yes/no, a scale, a preset) and compare models side by side.
 - **Datasets:** import CSV / TSV / JSON / JSONL and choose the input and ground-truth columns.
 - **Experiments:** run rows × models with live progress; get a leaderboard (accuracy, macro F1, ECE,
   latency), confusion matrices, calibration, model agreement and an error explorer; export to CSV.

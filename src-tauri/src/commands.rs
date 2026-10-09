@@ -145,6 +145,19 @@ pub async fn presets_list(state: State<'_, AppState>) -> Result<Vec<PresetSummar
     state.client().presets().await
 }
 
+/// A preset's questions, so the Playground can load them as editable questions for any model.
+#[tauri::command]
+pub async fn preset_show(state: State<'_, AppState>, name: String) -> Result<IndexMap<String, serde_json::Value>> {
+    state.client().preset_questions(&name).await
+}
+
+/// Write a text file chosen by the user in a save dialog (Playground bulk export).
+#[tauri::command]
+pub async fn save_text_file(path: String, contents: String) -> Result<()> {
+    tokio::fs::write(&path, contents).await?;
+    Ok(())
+}
+
 // ---- quick check --------------------------------------------------------------------------
 
 #[derive(Deserialize)]

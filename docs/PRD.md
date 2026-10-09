@@ -21,7 +21,7 @@ in this version.
 
 **Non-goals (MVP)**
 - Training or fine-tuning (mockup only).
-- Multi-label classification, regression, and `score` tasks in experiments (quick check supports `score`).
+- Multi-label classification, regression, and `score` tasks in experiments (Playground supports `score`).
 - Cloud sync, accounts, sharing.
 - Automatic Windows install of Ollaya (manual install is detected).
 
@@ -30,7 +30,7 @@ in this version.
 1. **Pick a model for ticket routing.** Import `tickets.csv` (subject, body, team) → ground truth
    `team`, inputs `subject + body` → laya, nli, winnow:e4b on 500 rows → laya:en has the best macro
    F1 at 9× lower latency than winnow → export the CSV of errors to review.
-2. **Sanity-check a label set.** In quick check, paste a message, define labels with descriptions,
+2. **Sanity-check a label set.** In Playground, paste a message, define labels with descriptions,
    compare three models, tweak a description, and run again.
 3. **Spam yes/no.** A binary task with `spam` as the positive label. ClassifAI asks an Ollaya `noul`
    question and thresholds P(yes) at 0.5.
@@ -54,7 +54,7 @@ in this version.
 | M3 | Pull any model name, with streaming byte progress (`POST /api/pull`); several pulls can run at once |
 | M4 | Remove a model (`DELETE /api/delete`) |
 
-### 4.3 Quick check
+### 4.3 Playground
 | ID | Requirement |
 |---|---|
 | Q1 | Input as plain text, or JSON (sent as an object `state`) |
@@ -96,7 +96,7 @@ in this version.
 | ID | Requirement |
 |---|---|
 | C1 | Built-in providers: **TypeSafe Jev** (`api.typesafe.ai/v1/systemone`), **OpenAI Decisions** (`/v1/decisions`, translated to/from the TypeSafe shape; refusals surfaced per question), **Cloudflare Workers AI** (Clef, Clef-Flash; account-scoped URL); plus any number of **custom TypeSafe-compatible endpoints** (OpenRouter, Vercel AI Gateway, remote Ollaya). |
-| C2 | Cloud model ids are `@{provider}/{model}` and work everywhere a model name does (quick check, experiments, CLI). |
+| C2 | Cloud model ids are `@{provider}/{model}` and work everywhere a model name does (Playground, experiments, CLI). |
 | C3 | Connect a provider from Models → Cloud: API key (macOS Keychain, never the DB), Cloudflare account id, base URL for custom endpoints; **Test** sends one tiny request. |
 | C4 | Each model has editable **input/output prices per 1M tokens** (defaults from the providers' published prices, Oct 2026) and an enable switch; users can add models to any provider. |
 | C5 | Every request logs tokens and estimated cost (`usage_log`); Models → Usage & cost shows spend per model for 7/30 days/all; the experiment leaderboard shows cost per model and per 1k rows. |
@@ -164,6 +164,6 @@ See the questions in the hand-off message; answers will be folded back into this
 
 - Predictions filtering and joining happen in memory per request. That is fine up to ~50k rows ×
   models; move it to SQL in Phase 1.
-- Ollaya preset questions in quick check are rendered generically; experiments support one question.
+- Ollaya preset questions in Playground are rendered generically; experiments support one question.
 - No ETA yet; no "retry failed rows only".
 - The catalog is hard-coded from Ollaya's README; it should come from `ollaya.dev/search` later.

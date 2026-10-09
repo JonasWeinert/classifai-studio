@@ -5,7 +5,7 @@ import { ConfusionMatrix, heat, MetricBars, Reliability } from "../components/ch
 import { ThresholdPanel } from "../components/ThresholdPanel";
 import { Badge, Button, CardHeader, ErrorNote, Input, Modal, PageHeader, Progress, Segmented, Select, Spinner, Tooltip } from "../components/ui";
 import { api, errorMessage, events, pickSavePath } from "../lib/api";
-import { kappaWord, openInQuickCheck } from "../lib/insights";
+import { kappaWord, openInPlayground } from "../lib/insights";
 import { useApp } from "../lib/app";
 import { ago, modelColor, ms, num, pct, shortModel, usd } from "../lib/format";
 import type { Experiment, ExperimentStatus, ModelMetrics, Page, PredictionRow, Report, TaskSpec, UsageRow } from "../lib/types";
@@ -875,8 +875,8 @@ function PredictionsExplorer({
                         <Tooltip content="Relabel…">
                           <Button size="icon" variant="ghost" icon={<Pencil className="size-3.5" />} onClick={() => setRelabel({ row: r, value: r.ground_truth, note: r.review_note ?? "" })} />
                         </Tooltip>
-                        <Tooltip content="Open in Quick Check">
-                          <Button size="icon" variant="ghost" icon={<SquareArrowOutUpRight className="size-3.5" />} onClick={() => openInQuickCheck(go, r.input)} />
+                        <Tooltip content="Open in Playground">
+                          <Button size="icon" variant="ghost" icon={<SquareArrowOutUpRight className="size-3.5" />} onClick={() => openInPlayground(go, r.input)} />
                         </Tooltip>
                       </div>
                     )}

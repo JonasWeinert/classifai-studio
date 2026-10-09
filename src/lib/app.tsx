@@ -33,6 +33,8 @@ interface AppCtx {
   dark: boolean;
   budget: BudgetStatus | null;
   refreshBudget: () => Promise<void>;
+  sidebarOpen: boolean;
+  toggleSidebar: () => void;
   engine: EngineStatus | null;
   refreshEngine: () => Promise<EngineStatus | null>;
   models: LocalModel[];
@@ -57,6 +59,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<ThemePref>(() => load<ThemePref>("theme", "system"));
   const [sysDark, setSysDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const [budget, setBudget] = useState<BudgetStatus | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(() => load<boolean>("sidebar", true));
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((o) => {
+      save("sidebar", !o);
+      return !o;
+    });
+  }, []);
   const [engine, setEngine] = useState<EngineStatus | null>(null);
   const [models, setModels] = useState<LocalModel[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -195,8 +204,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [refreshBudget]);
 
   const value = useMemo(
-    () => ({ route, go, back, canGoBack: history.length > 0, theme, setTheme, dark, budget, refreshBudget, engine, refreshEngine, models, refreshModels, providers, refreshProviders, cloudModels, pulls, pull, toast, toasts, dismissToast }),
-    [route, go, back, history.length, theme, setTheme, dark, budget, refreshBudget, engine, refreshEngine, models, refreshModels, providers, refreshProviders, cloudModels, pulls, pull, toast, toasts, dismissToast],
+    () => ({ route, go, back, canGoBack: history.length > 0, theme, setTheme, dark, budget, refreshBudget, sidebarOpen, toggleSidebar, engine, refreshEngine, models, refreshModels, providers, refreshProviders, cloudModels, pulls, pull, toast, toasts, dismissToast }),
+    [route, go, back, history.length, theme, setTheme, dark, budget, refreshBudget, sidebarOpen, toggleSidebar, engine, refreshEngine, models, refreshModels, providers, refreshProviders, cloudModels, pulls, pull, toast, toasts, dismissToast],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

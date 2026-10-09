@@ -456,7 +456,7 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
 
           <Section
             title="Questions"
-            subtitle="One question per ground-truth column. All are asked in one pass per row and model."
+            subtitle="Add as many questions as you like and pick the ground-truth column for each. All are asked in one pass per row and model."
             actions={
               <>
                 {(sets.data?.length ?? 0) > 0 && (
@@ -666,14 +666,14 @@ function QuestionBlock({ q, index, columns, problems, onChange, onRemove }: { q:
 
   return (
     <div id={`field-q-${q.key}`} className="py-5 first:pt-0 fade-up">
-      <div className="mb-3 flex items-center gap-2">
+      {/* Same shape as the Playground editor: the question first, then where its answers are checked. */}
+      <div className="mb-2 flex items-center gap-2">
         <span className="w-5 text-[12px] font-semibold text-faint tnum">{index + 1}</span>
-        <span className="text-[12.5px] text-muted-foreground">Ground truth</span>
-        <Select
-          className="min-w-[10rem]"
-          value={q.column}
-          onChange={(column) => onChange({ column, labels: null, instructionsTouched: false, seed: q.seed ? { ...q.seed, specs: undefined, positive: undefined } : undefined })}
-          options={columns.map((c) => ({ value: c, label: c }))}
+        <Input
+          className="flex-1"
+          value={q.instructions}
+          onChange={(v) => onChange({ instructions: v, instructionsTouched: v.trim() !== "" })}
+          placeholder={q.kind === "binary" ? "Statement that is true for the positive label, e.g. This is a recurring payment." : "Question, e.g. Which spending category is this?"}
         />
         <Segmented
           value={q.kind}
@@ -683,21 +683,22 @@ function QuestionBlock({ q, index, columns, problems, onChange, onRemove }: { q:
             { value: "binary", label: "Yes / No" },
           ]}
         />
-        <div className="flex-1" />
         {onRemove && <Button variant="ghost" size="icon" title="Remove question" onClick={onRemove} icon={<Trash2 className="size-3.5" />} />}
       </div>
 
       <div className="ml-7 space-y-3">
         {problems.length > 0 && <FieldProblems msgs={problems} />}
-        <div>
-          <Input
-            value={q.instructions}
-            onChange={(v) => onChange({ instructions: v, instructionsTouched: v.trim() !== "" })}
-            placeholder={q.kind === "binary" ? "Statement that is true for the positive label, e.g. This is a recurring payment." : "Question, e.g. Which spending category is this?"}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[12.5px] font-medium">Ground truth</span>
+          <Select
+            className="min-w-[11rem]"
+            value={q.column}
+            onChange={(column) => onChange({ column, labels: null, instructionsTouched: false, seed: q.seed ? { ...q.seed, specs: undefined, positive: undefined } : undefined })}
+            options={columns.map((c) => ({ value: c, label: c }))}
           />
-          <div className="mt-1 text-[11.5px] text-faint">
-            {q.kind === "choice" ? "Asked as a pick-one question with one option per label." : `Asked as yes/no; P(yes) ≥ 0.5 predicts “${q.positive || "the positive label"}”.`}
-          </div>
+          <span className="text-[11.5px] text-faint">
+            {q.kind === "choice" ? "Each value in this column is a label option." : `Two values; P(yes) ≥ 0.5 predicts “${q.positive || "the positive label"}”.`}
+          </span>
         </div>
 
         <Disclosure label={q.context.trim() ? "Context" : "Add context"} defaultOpen={!!q.context}>

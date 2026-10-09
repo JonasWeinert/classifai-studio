@@ -263,6 +263,22 @@ impl Client {
         Ok(Self::check(r).await?.json::<P>().await?.presets)
     }
 
+    /// `POST /api/presets/show`: a preset's question set (TypeSafe question schema).
+    pub async fn preset_questions(&self, name: &str) -> Result<IndexMap<String, Value>> {
+        #[derive(Deserialize)]
+        struct P {
+            questions: IndexMap<String, Value>,
+        }
+        let r = self
+            .http
+            .post(self.url("/api/presets/show"))
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await
+            .map_err(|e| self.map_send_err(e))?;
+        Ok(Self::check(r).await?.json::<P>().await?.questions)
+    }
+
     pub async fn decide(&self, req: &DecideRequest) -> Result<DecideResponse> {
         let r = self
             .http

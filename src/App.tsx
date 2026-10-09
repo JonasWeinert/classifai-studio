@@ -1,6 +1,7 @@
 import { AnimatedToastStack } from "@/components/motion/animated-toast-stack";
 import { cn } from "@/lib/utils";
-import { FileUp } from "lucide-react";
+import { FileUp, PanelLeft } from "lucide-react";
+import { Tooltip } from "./components/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Palette } from "./components/Palette";
 import { Sidebar } from "./components/Sidebar";
@@ -18,7 +19,7 @@ import { FineTune } from "./pages/FineTune";
 import { Models } from "./pages/Models";
 import { NewExperiment } from "./pages/NewExperiment";
 import { Onboarding } from "./pages/Onboarding";
-import { QuickCheck } from "./pages/QuickCheck";
+import { Playground } from "./pages/Playground";
 import { Review } from "./pages/Review";
 import { Settings } from "./pages/Settings";
 
@@ -41,7 +42,7 @@ const NAV: Record<string, Route> = {
 const DATA_FILE = /\.(csv|tsv|json|jsonl|ndjson)$/i;
 
 export default function App() {
-  const { route, go, back, engine, models, cloudModels, toasts, dismissToast } = useApp();
+  const { route, go, back, engine, models, cloudModels, toasts, dismissToast, sidebarOpen, toggleSidebar } = useApp();
   const imp = useImportDataset();
   const [skipOnboarding, setSkip] = useState(false);
   const [toolbar, setToolbar] = useState<HTMLDivElement | null>(null);
@@ -59,8 +60,9 @@ export default function App() {
       if (action === "new-experiment") return go({ page: "new-experiment" });
       if (action === "import") return imp.run();
       if (action === "palette") return setPaletteOpen(true);
+      if (action === "toggle-sidebar") return toggleSidebar();
     },
-    [back, go, imp],
+    [back, go, imp, toggleSidebar],
   );
 
   // Native menu (Tauri) …
@@ -74,6 +76,13 @@ export default function App() {
   runRef.current = runAction;
   useEffect(() => {
     if (isTauri) return;
+    const toggle = (e: KeyboardEvent) => {
+      if (e.metaKey && e.ctrlKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        runRef.current("toggle-sidebar");
+      }
+    };
+    window.addEventListener("keydown", toggle);
     const keys: Record<string, string> = { "1": "nav:quick", "2": "nav:datasets", "3": "nav:experiments", "4": "nav:models", "[": "back", ",": "settings", n: "new-experiment", o: "import" };
     const h = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
@@ -83,7 +92,10 @@ export default function App() {
       runRef.current(action);
     };
     window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
+    return () => {
+      window.removeEventListener("keydown", h);
+      window.removeEventListener("keydown", toggle);
+    };
   }, []);
 
   // Drop a data file anywhere on the window to import it.
@@ -150,14 +162,22 @@ export default function App() {
         <div
           ref={setToolbar}
           className={cn(
-            "titlebar relative z-30 flex h-[52px] shrink-0 items-center gap-4 border-b px-6 transition-colors duration-200",
+            "titlebar relative z-30 flex h-[52px] shrink-0 items-center gap-3 border-b pr-6 transition-[padding,background-color,border-color] duration-300 ease-[var(--ease-out)]",
+            // With the sidebar hidden, leave room for the window's traffic lights.
+            sidebarOpen ? "pl-4" : "pl-[84px]",
             scrolled ? "border-border bg-background/80 backdrop-blur-xl" : "border-transparent bg-background",
           )}
-        />
+        >
+          <Tooltip content={sidebarOpen ? "Hide sidebar (⌃⌘S)" : "Show sidebar (⌃⌘S)"} side="bottom">
+            <button onClick={toggleSidebar} aria-label="Toggle sidebar" className="grid size-7 shrink-0 place-items-center rounded-[7px] text-muted-foreground hover:bg-sel hover:text-foreground">
+              <PanelLeft className="size-[17px] stroke-[1.75]" />
+            </button>
+          </Tooltip>
+        </div>
         <div id="main-scroll" className="min-h-0 flex-1 overflow-y-auto" onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 4)}>
           <ToolbarContext.Provider value={toolbar}>
             <div key={routeKey(route)} className="page-in mx-auto max-w-[1160px] px-8 pb-16 pt-6">
-              {route.page === "quick" && <QuickCheck />}
+              {route.page === "quick" && <Playground />}
               {route.page === "datasets" && <Datasets />}
               {route.page === "dataset" && <DatasetDetail id={route.id} />}
               {route.page === "new-experiment" && <NewExperiment datasetId={route.datasetId} />}

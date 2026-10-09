@@ -41,7 +41,7 @@ code.
 ### Phase 0: MVP (this scaffold) ✅
 
 - First-launch onboarding: install Ollaya into the app folder, start the daemon, pull a starter model.
-- Quick check: one input, a question (labels, yes/no, scale or Ollaya preset), N models, results side by side.
+- Playground: one input, a question (labels, yes/no, scale or Ollaya preset), N models, results side by side.
 - Datasets: import CSV/TSV/JSON/JSONL, browse rows, profile columns.
 - Experiments: choose input columns, ground-truth column, labels (with optional descriptions), models
   and sample size; run with live progress, cancel and resume.

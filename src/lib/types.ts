@@ -341,7 +341,7 @@ export interface QuestionSetPayload {
   questions: SetQuestion[];
 }
 
-/** One question in a set — the editor's draft shape, shared by Quick Check and New Experiment. */
+/** One question in a set — the editor's draft shape, shared by Playground and New Experiment. */
 export interface SetQuestion {
   kind: "choice" | "multi" | "noul" | "score" | "rank" | "number";
   text: string;

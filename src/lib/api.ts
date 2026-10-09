@@ -1,4 +1,5 @@
 import type {
+  Question,
   AppSettings,
   BudgetStatus,
   Estimate,
@@ -77,6 +78,8 @@ export const api = {
   cloudModelDelete: (id: string) => call<void>("cloud_model_delete", { id }),
   usageSummary: (since?: string) => call<UsageRow[]>("usage_summary", { since }),
   experimentUsage: (id: string) => call<UsageRow[]>("experiment_usage", { id }),
+  presetShow: (name: string) => call<Record<string, Question>>("preset_show", { name }),
+  saveTextFile: (path: string, contents: string) => call<void>("save_text_file", { path, contents }),
   presets: () => call<PresetSummary[]>("presets_list"),
 
   quickClassify: (req: {

@@ -11,17 +11,20 @@ export function kappaWord(k: number) {
   return "almost perfect";
 }
 
-/** Send an input to Quick Check. JSON object inputs (several columns) stay JSON. */
-export function openInQuickCheck(go: ReturnType<typeof useApp>["go"], input: string) {
-  let asJson = false;
+/** Send an input to Playground. JSON object inputs (several columns) stay JSON. */
+/** Send an input to the Playground. Multi-column (JSON object) inputs become labelled lines. */
+export function openInPlayground(go: ReturnType<typeof useApp>["go"], input: string) {
+  let text = input;
   if (input.trim().startsWith("{")) {
     try {
-      JSON.parse(input);
-      asJson = true;
+      const obj = JSON.parse(input) as Record<string, unknown>;
+      text = Object.entries(obj)
+        .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+        .join("\n");
     } catch {
       /* plain text */
     }
   }
-  handoff.set({ text: input, asJson });
+  handoff.set({ text, asJson: false });
   go({ page: "quick" });
 }

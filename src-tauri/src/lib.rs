@@ -32,12 +32,13 @@ const MENU_ACTIONS: &[(&str, &str, &str)] = &[
     ("settings", "Settings…", "CmdOrCtrl+,"),
     ("import", "Import Dataset…", "CmdOrCtrl+O"),
     ("new-experiment", "New Experiment", "CmdOrCtrl+N"),
-    ("nav:quick", "Quick Check", "CmdOrCtrl+1"),
+    ("nav:quick", "Playground", "CmdOrCtrl+1"),
     ("nav:datasets", "Datasets", "CmdOrCtrl+2"),
     ("nav:experiments", "Experiments", "CmdOrCtrl+3"),
     ("nav:models", "Models", "CmdOrCtrl+4"),
     ("palette", "Command Palette", "CmdOrCtrl+K"),
     ("back", "Back", "CmdOrCtrl+["),
+    ("toggle-sidebar", "Toggle Sidebar", "Ctrl+CmdOrCtrl+S"),
 ];
 
 /// The native menu bar. Custom items emit `menu://action` with their id; the standard Edit items
@@ -81,6 +82,8 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .select_all()
         .build()?;
     let view = SubmenuBuilder::new(app, "View")
+        .item(&item("toggle-sidebar")?)
+        .separator()
         .item(&item("nav:quick")?)
         .item(&item("nav:datasets")?)
         .item(&item("nav:experiments")?)
@@ -148,6 +151,8 @@ pub fn run() {
             commands::model_pull,
             commands::model_delete,
             commands::presets_list,
+            commands::preset_show,
+            commands::save_text_file,
             commands::quick_classify,
             commands::dataset_import,
             commands::dataset_list,

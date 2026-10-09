@@ -1,16 +1,18 @@
 import { cn } from "@/lib/utils";
-import { CornerDownLeft, Plus, RotateCcw, Save, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { CornerDownLeft, Download, Plus, RotateCcw, Save, Square, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ProbBars } from "../components/charts";
 import { ModelMenu, ModelPicker } from "../components/ModelPicker";
-import { Badge, Button, Card, Disclosure, ErrorNote, FormRow, Input, Kbd, Modal, PageHeader, Section, Select, Slider, Spinner, Switch, Textarea } from "../components/ui";
-import { api } from "../lib/api";
+import { Badge, Button, Card, Disclosure, ErrorNote, FormRow, Input, Kbd, Modal, PageHeader, Progress, Section, Segmented, Select, Slider, Spinner, Textarea } from "../components/ui";
+import { api, pickSavePath } from "../lib/api";
+import { guessInputColumns, guessLabelColumn } from "../lib/columns";
 import { handoff } from "../lib/handoff";
 import { load, save } from "../lib/persist";
+import { describeError } from "../lib/errors";
 import { useApp, useAsync } from "../lib/app";
 import { modelColor, ms, pct, shortModel, usd } from "../lib/format";
 import { composeInstructions, slugId } from "../lib/questions";
-import type { AnyAnswer, AnyQuestion, QuickResult } from "../lib/types";
+import type { AnyAnswer, AnyQuestion, Question, QuickResult } from "../lib/types";
 
 type Kind = "choice" | "multi" | "noul" | "score" | "rank" | "number";
 
@@ -111,30 +113,26 @@ type Slot = { model: string; result?: QuickResult; error?: unknown; loading: boo
 
 interface Saved {
   text: string;
-  asJson: boolean;
   shared: string;
   qs: QDraft[];
-  mode: Mode;
-  preset: string;
+  view: View;
   selected: string[];
   slots: Slot[];
   titles: Record<string, string>;
   ranWith: string | null;
   set: { id: string; name: string; version: number } | null;
 }
-type Mode = "custom" | "preset";
+type View = "single" | "bulk";
 
-export function QuickCheck() {
+export function Playground() {
   const { models, engine, cloudModels, toast, refreshBudget } = useApp();
   // Draft and results survive navigation and restarts (stored per user on this Mac).
   const saved = useMemo(() => load<Saved | null>("quick", null), []);
   const incoming = useMemo(() => handoff.take(), []);
   const [text, setText] = useState(incoming?.text ?? saved?.text ?? SAMPLE_TEXT);
-  const [asJson, setAsJson] = useState(incoming?.asJson ?? saved?.asJson ?? false);
   const [shared, setShared] = useState(saved?.shared ?? "");
   const [qs, setQs] = useState<QDraft[]>(() => (saved?.qs?.length ? saved.qs.map((q) => ({ ...q, key: nextKey++ })) : EXAMPLE()));
-  const [mode, setMode] = useState<Mode>(saved?.mode ?? "custom");
-  const [preset, setPreset] = useState(saved?.preset ?? "triage");
+  const [view, setView] = useState<View>(incoming ? "single" : saved?.view ?? "single");
   const [selected, setSelected] = useState<string[]>(saved?.selected ?? []);
   const [slots, setSlots] = useState<Slot[]>(incoming ? [] : (saved?.slots ?? []).filter((x) => !x.loading));
   const [titles, setTitles] = useState<Record<string, string>>(saved?.titles ?? {});
@@ -149,8 +147,8 @@ export function QuickCheck() {
   }, [models, cloudModels, selected.length]);
 
   useEffect(() => {
-    save("quick", { text, asJson, shared, qs, mode, preset, selected, slots, titles, ranWith, set } satisfies Saved);
-  }, [text, asJson, shared, qs, mode, preset, selected, slots, titles, ranWith, set]);
+    save("quick", { text, shared, qs, view, selected, slots, titles, ranWith, set } satisfies Saved);
+  }, [text, shared, qs, view, selected, slots, titles, ranWith, set]);
 
   // Question ids derive from their text; the map keeps ids unique and readable.
   const built = useMemo(() => {
@@ -165,10 +163,10 @@ export function QuickCheck() {
   }, [qs, shared]);
 
   // Results are "outdated" once the input, questions or models differ from the last run.
-  const signature = JSON.stringify({ text, asJson, mode, preset, q: mode === "custom" ? built.map((b) => b.q) : null });
+  const signature = JSON.stringify({ text, q: built.map((b) => b.q) });
   const outdated = slots.length > 0 && ranWith !== null && ranWith !== signature && !slots.some((x) => x.loading);
   const invalid = built.filter((b) => !b.q).length;
-  const canRun = !!text.trim() && selected.length > 0 && (mode === "preset" ? !!preset : built.length > 0 && invalid === 0);
+  const canRun = !!text.trim() && selected.length > 0 && built.length > 0 && invalid === 0;
   const running = slots.some((s) => s.loading);
 
   const run = useCallback(async () => {
@@ -180,7 +178,7 @@ export function QuickCheck() {
     setRanWith(signature);
     const one = async (model: string) => {
       try {
-        const result = await api.quickClassify({ model, state: text, as_json: asJson, ...(mode === "preset" ? { preset } : { questions }) });
+        const result = await api.quickClassify({ model, state: text, questions });
         setSlots((s) => s.map((x) => (x.model === model ? { model, result, loading: false } : x)));
       } catch (e) {
         setSlots((s) => s.map((x) => (x.model === model ? { model, error: e, loading: false } : x)));
@@ -196,28 +194,114 @@ export function QuickCheck() {
       ...cloud.map(one),
     ]);
     if (cloud.length) refreshBudget();
-  }, [asJson, built, canRun, mode, preset, refreshBudget, running, selected, signature, text]);
+  }, [built, canRun, refreshBudget, running, selected, signature, text]);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && view === "single") {
         e.preventDefault();
         run();
       }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [run]);
+  }, [run, view]);
+
+  // "Load…" lists saved question sets and Ollaya's presets; presets load as editable questions,
+  // so they work with every model (cloud included).
+  const loadSource = async (value: string) => {
+    if (value.startsWith("preset:")) {
+      const name = value.slice(7);
+      try {
+        const questions = await api.presetShow(name);
+        setQs(Object.entries(questions).map(([id, q]) => ({ ...fromWire(id, q), key: nextKey++ })));
+        setSet(null);
+        toast(`Loaded preset “${name}” as editable questions`, "good");
+      } catch (e) {
+        toast(describeError(e).message, "bad");
+      }
+      return;
+    }
+    const q = await api.questionSet(value);
+    setShared(q.payload.context ?? "");
+    setQs(q.payload.questions.map((x) => ({ ...x, key: nextKey++ })));
+    setSet({ id: q.id, name: q.name, version: q.version });
+  };
+  const sourceOptions = [
+    ...(sets.data ?? []).map((x) => ({ value: x.id, label: `${x.name} · v${x.version}` })),
+    ...(presets.data ?? []).map((p) => ({ value: `preset:${p.name}`, label: `Preset: ${p.name}` })),
+  ];
 
   const update = (key: number, patch: Partial<QDraft>) => setQs((all) => all.map((q) => (q.key === key ? { ...q, ...patch } : q)));
+
+  const viewSwitch = (
+    <Segmented
+      value={view}
+      onChange={setView}
+      options={[
+        { value: "single", label: "Single" },
+        { value: "bulk", label: "Bulk" },
+      ]}
+    />
+  );
+
+  const questionsSection = (
+    <Section
+      title="Questions"
+      subtitle="All questions are answered in a single pass per model."
+      actions={
+        <div className="flex items-center gap-2">
+          <Select className="min-w-[10rem]" placeholder="Load…" value={set?.id ?? ""} onChange={loadSource} options={sourceOptions} />
+          <Button size="sm" icon={<Save className="size-3" />} onClick={() => setSaving(true)}>
+            {set ? "Save" : "Save as set"}
+          </Button>
+        </div>
+      }
+    >
+      <div className="divide-y divide-border">
+        {qs.map((q, i) => (
+          <QuestionEditor key={q.key} q={q} index={i} id={built[i]?.id} invalid={!built[i]?.q} onChange={(p) => update(q.key, p)} onRemove={qs.length > 1 ? () => setQs(qs.filter((x) => x.key !== q.key)) : undefined} />
+        ))}
+        <div className="pt-3">
+          <Button variant="ghost" size="sm" icon={<Plus className="size-3.5" />} onClick={() => setQs([...qs, blank()])}>
+            Add question
+          </Button>
+        </div>
+      </div>
+    </Section>
+  );
+
+  const saveSheet = (
+    <SaveSetSheet
+      open={saving}
+      onClose={() => setSaving(false)}
+      current={set}
+      onSave={async (name, description, asNew) => {
+        const summary = await api.questionSetSave({ id: asNew ? null : set?.id, name, description, payload: { context: shared, questions: qs.map(({ key: _k, ...q }) => q) } });
+        setSet({ id: summary.id, name: summary.name, version: summary.version });
+        sets.reload();
+        toast(`Saved “${summary.name}” · v${summary.version}`, "good");
+      }}
+    />
+  );
+
+  if (view === "bulk") {
+    return (
+      <>
+        <Bulk viewSwitch={viewSwitch} questionsSection={questionsSection} built={built} invalid={invalid} shared={shared} setShared={setShared} />
+        {saveSheet}
+      </>
+    );
+  }
 
   return (
     <>
       <PageHeader
-        title="Quick Check"
+        title="Playground"
         subtitle={set ? `Question set “${set.name}” · v${set.version}` : "Ask several questions about one entry and compare models side by side."}
         actions={
           <>
+            {viewSwitch}
             <Button variant="ghost" size="sm" icon={<RotateCcw className="size-3" />} onClick={() => { setQs(EXAMPLE()); setText(SAMPLE_TEXT); setShared(""); setSlots([]); setSet(null); setRanWith(null); }}>
               Reset
             </Button>
@@ -236,77 +320,14 @@ export function QuickCheck() {
       <div className="grid grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)] gap-10">
         {/* ---- setup, directly on the background ---- */}
         <div>
-          <Section title="Input" actions={<Switch checked={asJson} onChange={setAsJson} label="JSON" />}>
-            <Textarea
-              rows={5}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder={asJson ? '{"subject": "…", "body": "…"}' : "Paste a message, ticket, abstract, review…"}
-              className={cn(asJson && "font-mono text-[12px]")}
-            />
+          <Section title="Input">
+            <Textarea rows={5} value={text} onChange={(e) => setText(e.target.value)} placeholder="Paste a message, ticket, abstract, review…" />
             <Disclosure className="mt-3" label={shared.trim() ? "Shared context" : "Add shared context"} defaultOpen={!!shared}>
               <Textarea rows={2} value={shared} onChange={(e) => setShared(e.target.value)} placeholder="Background every question should know, e.g. “Messages are from customers of a German telecom.”" />
             </Disclosure>
           </Section>
 
-          <Section
-            title="Questions"
-            subtitle={mode === "custom" ? "All questions are answered in a single pass per model." : "Ollaya's built-in question sets."}
-            actions={
-              <div className="flex items-center gap-2">
-              {mode === "custom" && (
-                <>
-                  <Select
-                    className="min-w-[9rem]"
-                    placeholder="Load set…"
-                    value={set?.id ?? ""}
-                    onChange={async (id) => {
-                      const q = await api.questionSet(id);
-                      setShared(q.payload.context ?? "");
-                      setQs(q.payload.questions.map((x) => ({ ...x, key: nextKey++ })));
-                      setSet({ id: q.id, name: q.name, version: q.version });
-                    }}
-                    options={(sets.data ?? []).map((x) => ({ value: x.id, label: `${x.name} · v${x.version}` }))}
-                  />
-                  <Button size="sm" icon={<Save className="size-3" />} onClick={() => setSaving(true)}>
-                    {set ? "Save" : "Save as set"}
-                  </Button>
-                </>
-              )}
-              <Select
-                className="min-w-[8rem]"
-                value={mode}
-                onChange={(v) => setMode(v as Mode)}
-                options={[
-                  { value: "custom", label: "Custom" },
-                  { value: "preset", label: "Preset" },
-                ]}
-              />
-              </div>
-            }
-          >
-            {mode === "preset" ? (
-              presets.loading ? (
-                <Spinner />
-              ) : (
-                <div className="space-y-1.5">
-                  <Select className="w-full" value={preset} onChange={setPreset} options={(presets.data ?? []).map((p) => ({ value: p.name, label: p.name + (p.builtin ? "" : " (custom)") }))} />
-                  <div className="text-[12px] text-muted-foreground">{presets.data?.find((p) => p.name === preset)?.description}</div>
-                </div>
-              )
-            ) : (
-              <div className="divide-y divide-border">
-                {qs.map((q, i) => (
-                  <QuestionEditor key={q.key} q={q} index={i} id={built[i]?.id} invalid={!built[i]?.q} onChange={(p) => update(q.key, p)} onRemove={qs.length > 1 ? () => setQs(qs.filter((x) => x.key !== q.key)) : undefined} />
-                ))}
-                <div className="pt-3">
-                  <Button variant="ghost" size="sm" icon={<Plus className="size-3.5" />} onClick={() => setQs([...qs, blank()])}>
-                    Add question
-                  </Button>
-                </div>
-              </div>
-            )}
-          </Section>
+          {questionsSection}
 
           {selected.length === 0 && (
             <Section title="Models">
@@ -347,17 +368,7 @@ export function QuickCheck() {
           )}
         </div>
       </div>
-      <SaveSetSheet
-        open={saving}
-        onClose={() => setSaving(false)}
-        current={set}
-        onSave={async (name, description, asNew) => {
-          const summary = await api.questionSetSave({ id: asNew ? null : set?.id, name, description, payload: { context: shared, questions: qs.map(({ key: _k, ...q }) => q) } });
-          setSet({ id: summary.id, name: summary.name, version: summary.version });
-          sets.reload();
-          toast(`Saved “${summary.name}” · v${summary.version}`, "good");
-        }}
-      />
+      {saveSheet}
     </>
   );
 }
@@ -677,5 +688,263 @@ function NumberView({ a, color }: { a: Extract<AnyAnswer, { type: "number" }>; c
         })}
       </div>
     </div>
+  );
+}
+
+/** An Ollaya/TypeSafe wire question (e.g. from a preset) as an editable draft. */
+function fromWire(id: string, q: Question): Omit<QDraft, "key"> {
+  const text = typeof q.instructions === "string" && q.instructions.trim() ? q.instructions : id.replace(/_/g, " ");
+  const base = { ...blank(), text, context: "" };
+  if (q.type === "choice") {
+    const criteria = Array.isArray(q.criteria) ? Object.fromEntries((q.criteria as string[]).map((c) => [c, null])) : q.criteria;
+    return { ...base, kind: "choice", options: Object.entries(criteria).map(([name, d]) => ({ name, description: typeof d === "string" ? d : "" })) };
+  }
+  if (q.type === "score") return { ...base, kind: "score", levels: q.criteria.map((c) => (typeof c === "string" ? c : JSON.stringify(c))) };
+  return { ...base, kind: "noul", yes: q.criteria?.true ?? "", no: q.criteria?.false ?? "" };
+}
+
+// ---- Bulk: many entries × one model ---------------------------------------------------------------
+
+interface BulkRow {
+  idx: number;
+  input: string;
+  answers?: Record<string, AnyAnswer>;
+  error?: unknown;
+  latency?: number;
+  cost?: number;
+}
+
+type Source = "paste" | "dataset";
+
+// Results survive navigating away and back within a session (they can be large, so not persisted).
+let bulkCache: { rows: BulkRow[]; titles: Record<string, string>; model: string } | null = null;
+
+const SAMPLE_BULK = [
+  "I was charged twice this month, please refund the second payment.",
+  "The app crashes every time I open the camera.",
+  "How do I change the email address on my account?",
+  "Cancel my subscription, I found a cheaper alternative.",
+].join("\n");
+
+function Bulk({ viewSwitch, questionsSection, built, invalid, shared, setShared }: { viewSwitch: ReactNode; questionsSection: ReactNode; built: { id: string; title: string; q: AnyQuestion | null }[]; invalid: number; shared: string; setShared: (s: string) => void }) {
+  const { models, cloudModels, toast, refreshBudget } = useApp();
+  const savedBulk = useMemo(() => load<{ source: Source; paste: string; datasetId: string; cols: string[]; limit: string; model: string } | null>("bulk", null), []);
+  const [source, setSource] = useState<Source>(savedBulk?.source ?? "paste");
+  const [paste, setPaste] = useState(savedBulk?.paste ?? SAMPLE_BULK);
+  const [datasetId, setDatasetId] = useState(savedBulk?.datasetId ?? "");
+  const [cols, setCols] = useState<string[]>(savedBulk?.cols ?? []);
+  const [limit, setLimit] = useState(savedBulk?.limit ?? "100");
+  const [model, setModel] = useState(savedBulk?.model ?? "");
+  const [rows, setRows] = useState<BulkRow[]>(bulkCache?.rows ?? []);
+  const [titles, setTitles] = useState<Record<string, string>>(bulkCache?.titles ?? {});
+  const [running, setRunning] = useState(false);
+  const stop = useRef(false);
+  const datasets = useAsync(() => api.datasets(), []);
+  const ds = datasets.data?.find((d) => d.id === datasetId);
+
+  const modelOptions = [...models.map((m) => ({ value: m.name, label: shortModel(m.name) })), ...cloudModels.map((m) => ({ value: m.id, label: `${m.display_name} (cloud)` }))];
+  useEffect(() => {
+    if (!model && modelOptions.length) setModel(modelOptions[0].value);
+  }, [model, modelOptions]);
+  useEffect(() => {
+    if (!datasetId && datasets.data?.length) setDatasetId(datasets.data[0].id);
+  }, [datasetId, datasets.data]);
+  useEffect(() => {
+    if (ds && cols.every((c) => !ds.columns.includes(c))) setCols(guessInputColumns(ds.columns, guessLabelColumn(ds.columns)));
+  }, [ds, cols]);
+  useEffect(() => save("bulk", { source, paste, datasetId, cols, limit, model }), [source, paste, datasetId, cols, limit, model]);
+  useEffect(() => {
+    bulkCache = { rows, titles, model };
+  }, [rows, titles, model]);
+
+  const lines = useMemo(() => paste.split("\n").map((l) => l.trim()).filter(Boolean), [paste]);
+  const max = Math.max(1, Math.min(Number(limit) || 100, 10_000));
+  const count = source === "paste" ? lines.length : Math.min(max, ds?.row_count ?? 0);
+  const canRun = !running && !!model && count > 0 && built.length > 0 && invalid === 0 && (source === "paste" || cols.length > 0);
+  const done = rows.filter((r) => r.answers || r.error !== undefined).length;
+
+  const run = async () => {
+    if (!canRun) return;
+    let entries: { idx: number; input: string }[];
+    if (source === "paste") entries = lines.map((input, idx) => ({ idx, input }));
+    else {
+      const page = await api.datasetRows(ds!.id, 0, max);
+      // Several columns become labelled lines, e.g. "subject: …\nbody: …".
+      entries = page.rows.map(([idx, row]) => ({ idx, input: cols.length === 1 ? row[cols[0]] ?? "" : cols.map((c) => `${c}: ${row[c] ?? ""}`).join("\n") }));
+    }
+    const questions = Object.fromEntries(built.map((b) => [b.id, b.q!]));
+    setTitles(Object.fromEntries(built.map((b) => [b.id, b.title])));
+    setRows(entries.map((e) => ({ ...e })));
+    setRunning(true);
+    stop.current = false;
+    let next = 0;
+    const worker = async () => {
+      while (!stop.current && next < entries.length) {
+        const i = next++;
+        try {
+          const r = await api.quickClassify({ model, state: entries[i].input, questions });
+          setRows((all) => all.map((x, k) => (k === i ? { ...x, answers: r.answers, latency: r.latency_ms, cost: r.cost_usd ?? 0 } : x)));
+        } catch (e) {
+          setRows((all) => all.map((x, k) => (k === i ? { ...x, error: e } : x)));
+        }
+      }
+    };
+    // Cloud models handle parallel requests well; a local model answers fastest with a few in flight.
+    await Promise.all(Array.from({ length: model.startsWith("@") ? 6 : 3 }, worker));
+    setRunning(false);
+    if (model.startsWith("@")) refreshBudget();
+    if (stop.current) toast("Stopped — partial results kept");
+  };
+
+  const exportCsv = async () => {
+    const ids = Object.keys(titles);
+    const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const header = ["row", "input", ...ids.flatMap((id) => [id, `${id}:confidence`])];
+    const body = rows.map((r) => [String(r.idx + 1), r.input, ...ids.flatMap((id) => {
+      const a = r.answers?.[id];
+      return a ? [headline(a), "confidence" in a ? a.confidence.toFixed(3) : a.type === "noul" ? a.noul.toFixed(3) : ""] : [r.error !== undefined ? "error" : "", ""];
+    })]);
+    const csv = [header, ...body].map((line) => line.map(esc).join(",")).join("\n");
+    const path = await pickSavePath("playground-bulk.csv");
+    if (!path) return;
+    await api.saveTextFile(path, csv);
+    toast(`Exported ${rows.length} rows`, "good");
+  };
+
+  const totalCost = rows.reduce((a, r) => a + (r.cost ?? 0), 0);
+  const lat = rows.map((r) => r.latency).filter((x): x is number => x !== undefined).sort((a, b) => a - b);
+  const ids = Object.keys(titles);
+
+  return (
+    <>
+      <PageHeader
+        title="Playground"
+        subtitle="Bulk: run your questions over many entries with one model. No ground truth needed."
+        actions={
+          <>
+            {viewSwitch}
+            <Select className="min-w-[10rem]" value={model} onChange={setModel} options={modelOptions} placeholder="Model…" />
+            {rows.length > 0 && !running && (
+              <Button icon={<Download className="size-3.5" />} onClick={exportCsv}>
+                Export CSV
+              </Button>
+            )}
+            {running ? (
+              <Button onClick={() => (stop.current = true)} icon={<Square className="size-3" />}>
+                Stop · {done} of {rows.length}
+              </Button>
+            ) : (
+              <Button variant="primary" disabled={!canRun} onClick={run}>
+                Run on {count.toLocaleString()} {count === 1 ? "entry" : "entries"}
+              </Button>
+            )}
+          </>
+        }
+      />
+
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-10">
+        <div>
+          <Section
+            title="Entries"
+            actions={
+              <Segmented
+                value={source}
+                onChange={setSource}
+                options={[
+                  { value: "paste", label: "Paste" },
+                  { value: "dataset", label: "Dataset" },
+                ]}
+              />
+            }
+          >
+            {source === "paste" ? (
+              <>
+                <Textarea rows={9} value={paste} onChange={(e) => setPaste(e.target.value)} placeholder="One entry per line" />
+                <div className="mt-1 text-[11.5px] text-muted-foreground">{lines.length.toLocaleString()} entries · one per line, blank lines are skipped</div>
+              </>
+            ) : (
+              <div className="-ml-2">
+                <FormRow label="Dataset:" labelWidth={110}>
+                  <Select className="max-w-xs" value={datasetId} onChange={setDatasetId} options={(datasets.data ?? []).map((d) => ({ value: d.id, label: `${d.name} (${d.row_count.toLocaleString()})` }))} placeholder="Choose…" />
+                </FormRow>
+                <FormRow label="Input columns:" labelWidth={110} align="start">
+                  <div className="flex flex-wrap gap-1.5 pt-0.5">
+                    {ds?.columns.map((c) => {
+                      const on = cols.includes(c);
+                      return (
+                        <button key={c} onClick={() => setCols(on ? cols.filter((x) => x !== c) : [...cols, c])} className={cn("h-[24px] rounded-full px-2.5 font-mono text-[12px] transition-colors", on ? "bg-primary text-primary-foreground" : "bg-sel text-muted-foreground hover:text-foreground")}>
+                          {c}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </FormRow>
+                <FormRow label="First rows:" labelWidth={110} hint="Bulk runs the first N rows in order. For a scored, sampled run use an experiment.">
+                  <Input className="max-w-[7rem]" value={limit} onChange={setLimit} />
+                </FormRow>
+              </div>
+            )}
+            <Disclosure className="mt-3" label={shared.trim() ? "Shared context" : "Add shared context"} defaultOpen={!!shared}>
+              <Textarea rows={2} value={shared} onChange={(e) => setShared(e.target.value)} placeholder="Background every question should know." />
+            </Disclosure>
+          </Section>
+        </div>
+        <div>{questionsSection}</div>
+      </div>
+
+      {rows.length > 0 && (
+        <Section
+          title="Results"
+          subtitle={`${done.toLocaleString()} of ${rows.length.toLocaleString()} done · ${shortModel(model)}${lat.length ? ` · median ${ms(lat[Math.floor(lat.length / 2)])}` : ""}${totalCost ? ` · ${usd(totalCost)}` : ""}`}
+        >
+          {running && <Progress value={done / rows.length} className="mb-3" />}
+          <div className="max-h-[560px] overflow-auto border-y border-border" data-selectable>
+            <table className="w-full text-[12.5px]">
+              <thead className="sticky top-0 z-10 bg-background text-[11px] text-faint">
+                <tr className="border-b border-border">
+                  <th className="w-10 py-2 text-left font-medium">#</th>
+                  <th className="py-2 pr-3 text-left font-medium">Input</th>
+                  {ids.map((id) => (
+                    <th key={id} className="max-w-[180px] truncate py-2 pr-3 text-left font-medium" title={titles[id]}>
+                      {titles[id]}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.idx} className="border-b border-border/60 align-top">
+                    <td className="py-1.5 font-mono text-[11px] text-faint tnum">{r.idx + 1}</td>
+                    <td className="max-w-[380px] truncate py-1.5 pr-3" title={r.input}>
+                      {r.input}
+                    </td>
+                    {ids.map((id) => {
+                      const a = r.answers?.[id];
+                      return (
+                        <td key={id} className="py-1.5 pr-3">
+                          {a ? (
+                            <span>
+                              {headline(a)}
+                              {"confidence" in a && <span className="ml-1 font-mono text-[10.5px] text-faint">{pct(a.confidence, 0)}</span>}
+                              {a.type === "noul" && <span className="ml-1 font-mono text-[10.5px] text-faint">{a.noul.toFixed(2)}</span>}
+                            </span>
+                          ) : r.error !== undefined ? (
+                            <span className="text-bad" title={describeError(r.error).message}>
+                              error
+                            </span>
+                          ) : (
+                            <span className="text-faint">…</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Section>
+      )}
+    </>
   );
 }

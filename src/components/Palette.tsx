@@ -24,7 +24,7 @@ export function Palette({ open, onOpenChange }: { open: boolean; onOpenChange: (
 
   const items = useMemo<CommandItem[]>(() => {
     const nav: CommandItem[] = [
-      { id: "nav-quick", label: "Quick Check", group: "Go to", hint: "⌘1", icon: Zap, onSelect: () => go({ page: "quick" }) },
+      { id: "nav-quick", label: "Playground", group: "Go to", hint: "⌘1", icon: Zap, onSelect: () => go({ page: "quick" }) },
       { id: "nav-datasets", label: "Datasets", group: "Go to", hint: "⌘2", icon: Database, onSelect: () => go({ page: "datasets" }) },
       { id: "nav-experiments", label: "Experiments", group: "Go to", hint: "⌘3", icon: FlaskConical, onSelect: () => go({ page: "experiments" }) },
       { id: "nav-models", label: "Models", group: "Go to", hint: "⌘4", icon: Boxes, onSelect: () => go({ page: "models" }) },
