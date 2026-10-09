@@ -8,6 +8,7 @@ export type ThemePref = "system" | "light" | "dark";
 
 export type Route =
   | { page: "quick" }
+  | { page: "bulk" }
   | { page: "datasets" }
   | { page: "dataset"; id: string }
   | { page: "new-experiment"; datasetId?: string; fromExperiment?: string; fromSet?: string }

@@ -1,5 +1,5 @@
 import { CommandPalette, type CommandItem } from "@/components/motion/command-palette";
-import { Boxes, Cloud, Database, FileUp, FlaskConical, Layers, Moon, Plus, Settings, SlidersHorizontal, Sun, Zap } from "lucide-react";
+import { Boxes, Cloud, Rows3, Database, FileUp, FlaskConical, Layers, Moon, Plus, Settings, SlidersHorizontal, Sun, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { useApp } from "../lib/app";
@@ -25,9 +25,10 @@ export function Palette({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const items = useMemo<CommandItem[]>(() => {
     const nav: CommandItem[] = [
       { id: "nav-quick", label: "Playground", group: "Go to", hint: "⌘1", icon: Zap, onSelect: () => go({ page: "quick" }) },
-      { id: "nav-datasets", label: "Datasets", group: "Go to", hint: "⌘2", icon: Database, onSelect: () => go({ page: "datasets" }) },
-      { id: "nav-experiments", label: "Experiments", group: "Go to", hint: "⌘3", icon: FlaskConical, onSelect: () => go({ page: "experiments" }) },
-      { id: "nav-models", label: "Models", group: "Go to", hint: "⌘4", icon: Boxes, onSelect: () => go({ page: "models" }) },
+      { id: "nav-bulk", label: "Bulk", group: "Go to", hint: "⌘2", icon: Rows3, keywords: ["batch", "many", "csv"], onSelect: () => go({ page: "bulk" }) },
+      { id: "nav-datasets", label: "Datasets", group: "Go to", hint: "⌘3", icon: Database, onSelect: () => go({ page: "datasets" }) },
+      { id: "nav-experiments", label: "Experiments", group: "Go to", hint: "⌘4", icon: FlaskConical, onSelect: () => go({ page: "experiments" }) },
+      { id: "nav-models", label: "Models", group: "Go to", hint: "⌘5", icon: Boxes, onSelect: () => go({ page: "models" }) },
       { id: "nav-cloud", label: "Cloud providers & API keys", group: "Go to", icon: Cloud, keywords: ["openai", "typesafe", "jev", "cloudflare", "key"], onSelect: () => go({ page: "models", tab: "cloud" }) },
       { id: "nav-usage", label: "Usage & cost", group: "Go to", icon: Cloud, keywords: ["spend", "budget", "billing"], onSelect: () => go({ page: "models", tab: "usage" }) },
       { id: "nav-finetune", label: "Fine-tune", group: "Go to", icon: SlidersHorizontal, onSelect: () => go({ page: "finetune" }) },

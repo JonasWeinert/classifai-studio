@@ -5,7 +5,7 @@ import { useApp } from "../lib/app";
 import { price, shortModel } from "../lib/format";
 
 /** Multi-select chips over installed local models and configured cloud models. */
-export function ModelPicker({ value, onChange, colors }: { value: string[]; onChange: (v: string[]) => void; colors?: (i: number) => string }) {
+export function ModelPicker({ value, onChange, colors, single }: { value: string[]; onChange: (v: string[]) => void; colors?: (i: number) => string; single?: boolean }) {
   const { models, cloudModels, go } = useApp();
   if (models.length === 0 && cloudModels.length === 0) {
     return (
@@ -14,7 +14,7 @@ export function ModelPicker({ value, onChange, colors }: { value: string[]; onCh
       </button>
     );
   }
-  const toggle = (m: string) => onChange(value.includes(m) ? value.filter((x) => x !== m) : [...value, m]);
+  const toggle = (m: string) => (single ? onChange([m]) : onChange(value.includes(m) ? value.filter((x) => x !== m) : [...value, m]));
   const chip = (id: string, label: string, meta: string | null, cloud: boolean) => {
     const i = value.indexOf(id);
     const on = i >= 0;
@@ -50,7 +50,7 @@ export function ModelPicker({ value, onChange, colors }: { value: string[]; onCh
 }
 
 /** Compact toolbar version of the picker: a pill showing the selection that opens the chips in a popover. */
-export function ModelMenu({ value, onChange, colors }: { value: string[]; onChange: (v: string[]) => void; colors?: (i: number) => string }) {
+export function ModelMenu({ value, onChange, colors, single }: { value: string[]; onChange: (v: string[]) => void; colors?: (i: number) => string; single?: boolean }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -82,8 +82,16 @@ export function ModelMenu({ value, onChange, colors }: { value: string[]; onChan
       </button>
       {open && (
         <div className="absolute right-0 top-[34px] z-50 w-[380px] rounded-[14px] border border-border bg-popover p-3 shadow-[0_12px_40px_rgba(0,0,0,.16)] fade-up">
-          <div className="mb-2 text-[11.5px] font-medium text-muted-foreground">Models to compare</div>
-          <ModelPicker value={value} onChange={onChange} colors={colors} />
+          <div className="mb-2 text-[11.5px] font-medium text-muted-foreground">{single ? "Model" : "Models to compare"}</div>
+          <ModelPicker
+            value={value}
+            onChange={(v) => {
+              onChange(v);
+              if (single) setOpen(false);
+            }}
+            colors={colors}
+            single={single}
+          />
         </div>
       )}
     </div>

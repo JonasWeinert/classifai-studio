@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { Boxes, Database, FlaskConical, Search, SlidersHorizontal, Zap } from "lucide-react";
+import { Boxes, Database, Rows3, FlaskConical, Search, SlidersHorizontal, Zap } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useApp, type Route } from "../lib/app";
 import { usd } from "../lib/format";
@@ -11,6 +11,7 @@ const SECTIONS: { title: string; items: Item[] }[] = [
     title: "Classify",
     items: [
       { page: "quick", label: "Playground", icon: <Zap />, match: ["quick"] },
+      { page: "bulk", label: "Bulk", icon: <Rows3 />, match: ["bulk"] },
       { page: "datasets", label: "Datasets", icon: <Database />, match: ["datasets", "dataset"] },
       { page: "experiments", label: "Experiments", icon: <FlaskConical />, match: ["experiments", "experiment", "new-experiment", "compare", "review"] },
     ],

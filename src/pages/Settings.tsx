@@ -10,11 +10,12 @@ type Tab = "general" | "engine" | "accounts";
 
 const SHORTCUTS: [string, string][] = [
   ["Command palette", "⌘ K"],
-  ["Playground · Datasets · Experiments · Models", "⌘ 1–4"],
+  ["Playground · Bulk · Datasets · Experiments · Models", "⌘ 1–5"],
   ["Back", "⌘ ["],
   ["New experiment", "⌘ N"],
   ["Import dataset", "⌘ O"],
-  ["Classify (Playground)", "⌘ ↩"],
+  ["Classify / Run (Playground, Bulk)", "⌘ ↩"],
+  ["Toggle sidebar", "⌃ ⌘ S"],
   ["Settings", "⌘ ,"],
 ];
 

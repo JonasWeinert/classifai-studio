@@ -19,6 +19,7 @@ import { FineTune } from "./pages/FineTune";
 import { Models } from "./pages/Models";
 import { NewExperiment } from "./pages/NewExperiment";
 import { Onboarding } from "./pages/Onboarding";
+import { Bulk } from "./pages/Bulk";
 import { Playground } from "./pages/Playground";
 import { Review } from "./pages/Review";
 import { Settings } from "./pages/Settings";
@@ -34,6 +35,7 @@ function routeKey(r: Route) {
 
 const NAV: Record<string, Route> = {
   "nav:quick": { page: "quick" },
+  "nav:bulk": { page: "bulk" },
   "nav:datasets": { page: "datasets" },
   "nav:experiments": { page: "experiments" },
   "nav:models": { page: "models" },
@@ -83,7 +85,7 @@ export default function App() {
       }
     };
     window.addEventListener("keydown", toggle);
-    const keys: Record<string, string> = { "1": "nav:quick", "2": "nav:datasets", "3": "nav:experiments", "4": "nav:models", "[": "back", ",": "settings", n: "new-experiment", o: "import" };
+    const keys: Record<string, string> = { "1": "nav:quick", "2": "nav:bulk", "3": "nav:datasets", "4": "nav:experiments", "5": "nav:models", "[": "back", ",": "settings", n: "new-experiment", o: "import" };
     const h = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
       const action = keys[e.key.toLowerCase()];
@@ -178,6 +180,7 @@ export default function App() {
           <ToolbarContext.Provider value={toolbar}>
             <div key={routeKey(route)} className="page-in mx-auto max-w-[1160px] px-8 pb-16 pt-6">
               {route.page === "quick" && <Playground />}
+              {route.page === "bulk" && <Bulk />}
               {route.page === "datasets" && <Datasets />}
               {route.page === "dataset" && <DatasetDetail id={route.id} />}
               {route.page === "new-experiment" && <NewExperiment datasetId={route.datasetId} />}

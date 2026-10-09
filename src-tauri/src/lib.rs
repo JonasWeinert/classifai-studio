@@ -33,9 +33,10 @@ const MENU_ACTIONS: &[(&str, &str, &str)] = &[
     ("import", "Import Dataset…", "CmdOrCtrl+O"),
     ("new-experiment", "New Experiment", "CmdOrCtrl+N"),
     ("nav:quick", "Playground", "CmdOrCtrl+1"),
-    ("nav:datasets", "Datasets", "CmdOrCtrl+2"),
-    ("nav:experiments", "Experiments", "CmdOrCtrl+3"),
-    ("nav:models", "Models", "CmdOrCtrl+4"),
+    ("nav:bulk", "Bulk", "CmdOrCtrl+2"),
+    ("nav:datasets", "Datasets", "CmdOrCtrl+3"),
+    ("nav:experiments", "Experiments", "CmdOrCtrl+4"),
+    ("nav:models", "Models", "CmdOrCtrl+5"),
     ("palette", "Command Palette", "CmdOrCtrl+K"),
     ("back", "Back", "CmdOrCtrl+["),
     ("toggle-sidebar", "Toggle Sidebar", "Ctrl+CmdOrCtrl+S"),
@@ -85,6 +86,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&item("toggle-sidebar")?)
         .separator()
         .item(&item("nav:quick")?)
+        .item(&item("nav:bulk")?)
         .item(&item("nav:datasets")?)
         .item(&item("nav:experiments")?)
         .item(&item("nav:models")?)
