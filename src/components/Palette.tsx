@@ -1,5 +1,5 @@
 import { CommandPalette, type CommandItem } from "@/components/motion/command-palette";
-import { Boxes, Cloud, Rows3, Database, FileUp, FlaskConical, Layers, Moon, Plus, Settings, SlidersHorizontal, Sun, Zap } from "lucide-react";
+import { Boxes, Cloud, Tag, Rows3, Database, FileUp, FlaskConical, Layers, Moon, Plus, Settings, SlidersHorizontal, Sun, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { useApp } from "../lib/app";
@@ -26,16 +26,22 @@ export function Palette({ open, onOpenChange }: { open: boolean; onOpenChange: (
     const nav: CommandItem[] = [
       { id: "nav-quick", label: "Playground", group: "Go to", hint: "⌘1", icon: Zap, onSelect: () => go({ page: "quick" }) },
       { id: "nav-bulk", label: "Bulk", group: "Go to", hint: "⌘2", icon: Rows3, keywords: ["batch", "many", "csv"], onSelect: () => go({ page: "bulk" }) },
-      { id: "nav-datasets", label: "Datasets", group: "Go to", hint: "⌘3", icon: Database, onSelect: () => go({ page: "datasets" }) },
-      { id: "nav-experiments", label: "Experiments", group: "Go to", hint: "⌘4", icon: FlaskConical, onSelect: () => go({ page: "experiments" }) },
-      { id: "nav-models", label: "Models", group: "Go to", hint: "⌘5", icon: Boxes, onSelect: () => go({ page: "models" }) },
+      { id: "nav-sets", label: "Question sets", group: "Go to", hint: "⌘5", icon: Layers, keywords: ["templates", "questions"], onSelect: () => go({ page: "question-sets" }) },
+      { id: "nav-datasets", label: "Datasets", group: "Go to", hint: "⌘6", icon: Database, onSelect: () => go({ page: "datasets" }) },
+      { id: "nav-labelling", label: "Manual labelling", group: "Go to", hint: "⌘4", icon: Tag, keywords: ["annotate", "code", "human"], onSelect: () => go({ page: "labelling" }) },
+      { id: "nav-experiments", label: "Evaluations", group: "Go to", hint: "⌘3", icon: FlaskConical, onSelect: () => go({ page: "experiments" }) },
+      { id: "nav-models", label: "Models", group: "Go to", hint: "⌘7", icon: Boxes, onSelect: () => go({ page: "models" }) },
       { id: "nav-cloud", label: "Cloud providers & API keys", group: "Go to", icon: Cloud, keywords: ["openai", "typesafe", "jev", "cloudflare", "key"], onSelect: () => go({ page: "models", tab: "cloud" }) },
       { id: "nav-usage", label: "Usage & cost", group: "Go to", icon: Cloud, keywords: ["spend", "budget", "billing"], onSelect: () => go({ page: "models", tab: "usage" }) },
       { id: "nav-finetune", label: "Fine-tune", group: "Go to", icon: SlidersHorizontal, onSelect: () => go({ page: "finetune" }) },
       { id: "nav-settings", label: "Settings", group: "Go to", hint: "⌘,", icon: Settings, onSelect: () => go({ page: "settings" }) },
     ];
     const actions: CommandItem[] = [
-      { id: "new-exp", label: "New experiment", group: "Actions", hint: "⌘N", icon: Plus, onSelect: () => go({ page: "new-experiment" }) },
+      { id: "new-label", label: "New labelling session", group: "Actions", icon: Tag, onSelect: () => go({ page: "label-new" }) },
+      { id: "import-hf", label: "Import from Hugging Face…", group: "Actions", icon: FileUp, keywords: ["huggingface", "hub"], onSelect: () => go({ page: "datasets", hf: true }) },
+      { id: "new-bulk", label: "New bulk run", group: "Actions", icon: Rows3, keywords: ["batch"], onSelect: () => go({ page: "bulk-new" }) },
+      { id: "new-set", label: "New question set", group: "Actions", icon: Layers, onSelect: () => go({ page: "question-set" }) },
+      { id: "new-exp", label: "New evaluation", group: "Actions", hint: "⌘N", icon: Plus, onSelect: () => go({ page: "new-experiment" }) },
       { id: "import", label: "Import dataset…", group: "Actions", hint: "⌘O", icon: FileUp, onSelect: () => imp.run() },
       { id: "sample", label: "Import sample dataset (bank transactions)", group: "Actions", icon: Database, keywords: ["example", "demo", "try"], onSelect: () => imp.importText(SAMPLE_DATASET.name, SAMPLE_DATASET.text) },
       {
@@ -50,11 +56,11 @@ export function Palette({ open, onOpenChange }: { open: boolean; onOpenChange: (
     return [
       ...actions,
       ...nav,
-      ...experiments.slice(0, 12).map((e) => ({ id: `exp-${e.id}`, label: e.name, group: "Experiments", hint: e.dataset_name, icon: FlaskConical, onSelect: () => go({ page: "experiment", id: e.id }) })),
+      ...experiments.slice(0, 12).map((e) => ({ id: `exp-${e.id}`, label: e.name, group: "Evaluations", hint: e.dataset_name, icon: FlaskConical, onSelect: () => go({ page: "experiment", id: e.id }) })),
       ...datasets.slice(0, 12).map((d) => ({ id: `ds-${d.id}`, label: d.name, group: "Datasets", hint: `${d.row_count.toLocaleString()} rows`, icon: Database, onSelect: () => go({ page: "dataset", id: d.id }) })),
-      ...sets.map((q) => ({ id: `qs-${q.id}`, label: `Experiment from “${q.name}”`, group: "Question sets", hint: `v${q.version}`, icon: Layers, onSelect: () => go({ page: "new-experiment", fromSet: q.id }) })),
+      ...sets.map((q) => ({ id: `qs-${q.id}`, label: `Evaluation from “${q.name}”`, group: "Question sets", hint: `v${q.version}`, icon: Layers, onSelect: () => go({ page: "new-experiment", fromSet: q.id }) })),
     ];
   }, [dark, datasets, experiments, go, imp, setTheme, sets, theme]);
 
-  return <CommandPalette items={items} open={open} onOpenChange={onOpenChange} placeholder="Search pages, experiments, datasets…" />;
+  return <CommandPalette items={items} open={open} onOpenChange={onOpenChange} placeholder="Search pages, evaluations, datasets…" />;
 }

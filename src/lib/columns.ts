@@ -1,8 +1,14 @@
 // Heuristics for picking sensible default columns in a freshly imported dataset.
 
+const LABEL_NAMES = ["label", "labels", "class", "category", "target", "gold", "ground_truth", "y", "intent", "sentiment", "department", "kind", "decision", "outcome", "include", "included", "eligible", "eligibility", "answer", "code", "status", "verdict", "result", "type"];
+
+/** A column named like a label, if any. */
+export function namedLabelColumn(cols: string[]): string | undefined {
+  return cols.find((c) => LABEL_NAMES.includes(c.toLowerCase().replace(/[\s-]+/g, "_")));
+}
+
 export function guessLabelColumn(cols: string[]): string {
-  const prefs = ["label", "labels", "class", "category", "target", "gold", "ground_truth", "y", "intent", "sentiment", "department"];
-  return cols.find((c) => prefs.includes(c.toLowerCase())) ?? cols[cols.length - 1];
+  return namedLabelColumn(cols) ?? cols[cols.length - 1];
 }
 
 export function guessInputColumns(cols: string[], label: string): string[] {

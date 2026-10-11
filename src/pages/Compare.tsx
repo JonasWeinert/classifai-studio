@@ -1,4 +1,5 @@
 // R1: compare two experiments — per question and model, metric deltas; per label, F1 deltas.
+import { Clamp } from "../components/Clamp";
 import clsx from "clsx";
 import { ArrowLeftRight, GitCompareArrows } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -68,7 +69,7 @@ export function Compare({ a, b }: { a: string; b?: string }) {
 
   if (error != null) return <ErrorNote error={error} />;
   if (!all) return <Spinner />;
-  if (!expA) return <ErrorNote>Experiment not found.</ErrorNote>;
+  if (!expA) return <ErrorNote>Evaluation not found.</ErrorNote>;
 
   const options = (exclude: string | undefined) =>
     all.filter((e) => e.id !== exclude).map((e) => ({ value: e.id, label: `${e.name}${e.dataset_id !== expA.dataset_id ? ` · ${e.dataset_name}` : ""}` }));
@@ -99,26 +100,26 @@ export function Compare({ a, b }: { a: string; b?: string }) {
               />
             </Tooltip>
             <span className="text-[12px] font-semibold text-muted-foreground">B</span>
-            <Select className="w-60" value={bId ?? ""} placeholder="Pick an experiment…" onChange={setBId} options={options(aId)} />
+            <Select className="w-60" value={bId ?? ""} placeholder="Pick an evaluation…" onChange={setBId} options={options(aId)} />
           </div>
         }
       />
 
       {!expB ? (
         <Empty icon={<GitCompareArrows />} title="Nothing to compare yet">
-          Duplicate this experiment, change the wording or the models, and run it — then compare the two here.
+          Duplicate this evaluation, change the wording or the models, and run it — then compare the two here.
         </Empty>
       ) : (
         <>
           {expA.dataset_id !== expB.dataset_id && (
             <div className="mb-4 rounded-[10px] bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
-              These experiments use different datasets ({expA.dataset_name} vs {expB.dataset_name}), so differences mix data and setup.
+              These evaluations use different datasets ({expA.dataset_name} vs {expB.dataset_name}), so differences mix data and setup.
             </div>
           )}
           <ConfigDiff a={expA} b={expB} />
           {shared.length === 0 ? (
             <Empty icon={<GitCompareArrows />} title="No questions in common">
-              The two experiments share no question ids, so there's nothing to compare metric by metric.
+              The two evaluations share no question ids, so there's nothing to compare metric by metric.
             </Empty>
           ) : models.length === 0 ? (
             <Empty icon={<GitCompareArrows />} title="No models in common">
@@ -183,8 +184,12 @@ function ConfigDiff({ a, b }: { a: Experiment; b: Experiment }) {
             {diffs.map((d) => (
               <tr key={d.what} className="border-t border-border align-top">
                 <td className="py-1.5 pr-3 text-muted-foreground">{d.what}</td>
-                <td className="py-1.5 pr-4 text-muted-foreground">{d.a}</td>
-                <td className="py-1.5">{d.b}</td>
+                <td className="max-w-[24rem] py-1.5 pr-4 text-muted-foreground">
+                  <Clamp>{d.a}</Clamp>
+                </td>
+                <td className="max-w-[24rem] py-1.5">
+                  <Clamp>{d.b}</Clamp>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -334,8 +339,8 @@ function QuestionCompare({ task, taskB, a, b, models, color }: { task: TaskSpec;
                 const d = ca && cb ? cb.f1 - ca.f1 : null;
                 return (
                   <tr key={l} className="border-t border-border">
-                    <td className="max-w-[200px] truncate py-1.5" title={l}>
-                      {l}
+                    <td className="py-1.5" title={l}>
+                      <div className="max-w-[200px] truncate">{l}</div>
                     </td>
                     <td className="py-1.5 text-right font-mono text-[11.5px] text-faint tnum">{cb?.support ?? ca?.support ?? "—"}</td>
                     <td className="py-1.5 text-right font-mono text-[11.5px] text-muted-foreground tnum">{ca ? num(ca.f1, 2) : "—"}</td>

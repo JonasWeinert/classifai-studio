@@ -88,6 +88,7 @@ async fn experiment_across_local_and_cloud_models() {
                 labels: labels(&["billing", "technical", "account"]),
                 positive_label: None,
                 threshold: None,
+                when: None,
             },
             TaskSpec {
                 id: "refund".into(),
@@ -98,6 +99,7 @@ async fn experiment_across_local_and_cloud_models() {
                 labels: labels(&["yes", "no"]),
                 positive_label: Some("yes".into()),
                 threshold: None,
+                when: None,
             },
         ],
         models: models.iter().map(|m| m.to_string()).collect(),

@@ -429,7 +429,7 @@ fn question_chars(q: &Question) -> usize {
         Question::Score { instructions, criteria } => n(instructions) + criteria.iter().map(|c| c.chars().count()).sum::<usize>(),
         Question::Noul { instructions, criteria } => {
             n(instructions) + criteria.as_ref().map_or(0, |c| n(&c.when_true) + n(&c.when_false))
-        }
+        }        Question::Text { instructions } => n(instructions),
     }
 }
 
@@ -449,17 +449,12 @@ pub fn estimate_tokens(sample_state_chars: &[usize], question_chars: usize, rows
     ((mean + question_chars as f64) / 4.0 * rows as f64).round() as u64
 }
 
-fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.total_cmp(b));
-    let n = v.len();
-    if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 }
-}
-
 /// Seconds per request: median of the model's past latencies when it has at least 5, else a default.
 fn seconds_per_request(store: &Store, model: &str) -> Result<f64> {
-    let past = store.model_latencies(model)?;
-    if past.len() >= 5 {
-        return Ok(median(past) / 1000.0);
+    if let (Some(median), n) = store.model_latency_median(model)? {
+        if n >= 5 {
+            return Ok(median / 1000.0);
+        }
     }
     Ok(if crate::providers::is_cloud_model(model) { DEFAULT_CLOUD_SECONDS } else { DEFAULT_LOCAL_SECONDS })
 }
@@ -578,6 +573,7 @@ mod tests {
             labels: vec![label("billing", &["Billing"]), label("technical", &[])],
             positive_label: None,
             threshold: None,
+            when: None,
         }
     }
 
@@ -591,6 +587,7 @@ mod tests {
             labels: vec![label("yes", &[]), label("no", &[])],
             positive_label: Some("yes".into()),
             threshold: None,
+            when: None,
         }
     }
 
@@ -663,6 +660,27 @@ mod tests {
         }
         let e = store.get_experiment(&id).unwrap();
         (store, e)
+    }
+
+    #[test]
+    fn experiment_saved_as_linked_dataset() {
+        let (store, e) = fixture();
+        let d = store.save_experiment_as_dataset(&e.id, "e results").unwrap();
+        assert_eq!(d.parent_id.as_deref(), Some(e.dataset_id.as_str()));
+        assert_eq!(d.row_count, 5);
+        assert_eq!(
+            d.added_columns,
+            [
+                "team · m1", "team · m1 confidence", "team · m2", "team · m2 confidence",
+                "spam · m1", "spam · m1 confidence", "spam · m2", "spam · m2 confidence",
+            ]
+        );
+        let rows = store.dataset_rows(&d.id, 0, 10).unwrap();
+        assert_eq!(rows[2].1["text"], "a2", "linked from the experiment's dataset");
+        assert_eq!(rows[2].1["team · m1"], "billing");
+        assert_eq!(rows[2].1["team · m1 confidence"], "0.100");
+        assert_eq!(rows[4].1["team · m1"], "", "no prediction, empty cell");
+        assert_eq!(rows[4].1["spam · m2"], "");
     }
 
     #[test]
@@ -791,8 +809,6 @@ mod tests {
         assert_eq!(estimate_tokens(&[10, 30], 20, 3), 30);
         assert_eq!(estimate_tokens(&[], 20, 3), 0);
         assert_eq!(estimate_tokens(&[1], 0, 2), 1, "0.25 tokens per row, rounded at the end");
-        assert_eq!(median(vec![5.0, 1.0, 3.0]), 3.0);
-        assert_eq!(median(vec![4.0, 1.0, 3.0, 2.0]), 2.5);
     }
 
     #[test]
@@ -810,6 +826,7 @@ mod tests {
             labels: vec![label("x", &[]), label("y", &[])],
             positive_label: None,
             threshold: None,
+            when: None,
         };
         let mut config = ExperimentConfig {
             name: "e".into(),

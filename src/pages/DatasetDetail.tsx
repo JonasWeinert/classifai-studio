@@ -1,14 +1,16 @@
 import clsx from "clsx";
-import { ArrowDown, ArrowUp, ChartColumnBig, ChevronLeft, ChevronRight, FlaskConical, Pencil, Search, SquareArrowOutUpRight, Trash2 } from "lucide-react";
+import { Panes } from "../components/Panes";
+import { ArrowDown, ArrowUp, ChartColumnBig, Link2, ChevronLeft, ChevronRight, FlaskConical, Pencil, Search, SquareArrowOutUpRight, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Distribution } from "../components/charts";
 import { Badge, Button, CardHeader, ErrorNote, Input, Modal, PageHeader, Spinner, Tooltip } from "../components/ui";
-import { api, errorMessage } from "../lib/api";
+import { api, errorMessage, fileSrc } from "../lib/api";
+import { isImageUrl } from "../lib/labelling";
 import { useApp, useAsync } from "../lib/app";
-import { guessInputColumns, guessLabelColumn } from "../lib/columns";
+import { guessLabelColumn } from "../lib/columns";
 import { ago, pct } from "../lib/format";
 import type { Row, ValueCount } from "../lib/types";
-import { openInPlayground } from "../lib/insights";
+import { OpenRowModal } from "../components/OpenRowModal";
 
 const PAGE = 50;
 
@@ -22,10 +24,13 @@ export function DatasetDetail({ id }: { id: string }) {
   const rows = useAsync(() => api.datasetRows(id, offset, PAGE, { search: search || undefined, sortColumn: sort?.column, sortDesc: sort?.desc }), [id, offset, search, sort?.column, sort?.desc]);
   const exps = useAsync(() => api.experiments(id), [id]);
   const corrections = useAsync(() => api.corrections(id), [id]);
+  const derived = useAsync(() => api.datasets().then((all) => all.filter((x) => x.parent_id === id)), [id]);
   const [column, setColumn] = useState<string | null>(null);
   const [counts, setCounts] = useState<ValueCount[] | null>(null);
+  const [distinctAll, setDistinctAll] = useState(0);
   const [confirm, setConfirm] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [opening, setOpening] = useState<[number, Row] | null>(null);
 
   // Debounced search.
   useEffect(() => {
@@ -48,22 +53,27 @@ export function DatasetDetail({ id }: { id: string }) {
   useEffect(() => {
     if (!column) return;
     setCounts(null);
-    api.valueCounts(id, column).then(setCounts).catch(() => setCounts([]));
+    api
+      .columnProfile(id, column, 300)
+      .then((p) => {
+        setCounts(p.top);
+        setDistinctAll(p.distinct);
+      })
+      .catch(() => setCounts([]));
   }, [id, column]);
 
   if (ds.error) return <ErrorNote error={ds.error} />;
   if (!d) return <Spinner />;
 
-  const distinct = counts?.length ?? 0;
+  const distinct = distinctAll;
   const looksCategorical = counts && distinct >= 2 && distinct <= 255 && distinct < d.row_count * 0.5;
   const total = rows.data?.total ?? d.row_count;
-  const textCols = guessInputColumns(d.columns, guessLabelColumn(d.columns));
+  const added = new Set(d.added_columns ?? []);
 
   const toggleSort = (c: string) => {
     setOffset(0);
     setSort((s) => (s?.column !== c ? { column: c, desc: false } : !s.desc ? { column: c, desc: true } : null));
   };
-  const openRow = (r: Row) => openInPlayground(go, textCols.length === 1 ? r[textCols[0]] ?? "" : JSON.stringify(Object.fromEntries(textCols.map((c) => [c, r[c] ?? ""]))));
 
   const rename = async () => {
     const name = renaming?.trim();
@@ -111,8 +121,14 @@ export function DatasetDetail({ id }: { id: string }) {
         }
         subtitle={
           <span className="tnum">
-            {d.row_count.toLocaleString()} rows · {d.columns.length} columns · imported {ago(d.created_at)}
-            {d.source && <span className="ml-2 font-mono text-[11.5px] text-faint">{d.source}</span>}
+            {d.row_count.toLocaleString()} rows · {d.columns.length} columns · {d.parent_id ? "saved" : "imported"} {ago(d.created_at)}
+            {d.parent_id ? (
+              <button className="ml-2 inline-flex items-center gap-1 hover:text-foreground hover:underline" onClick={() => go({ page: "dataset", id: d.parent_id! })}>
+                <Link2 className="size-3" /> linked to {d.parent_name}
+              </button>
+            ) : (
+              d.source && <span className="ml-2 font-mono text-[11.5px] text-faint">{d.source}</span>
+            )}
           </span>
         }
         actions={
@@ -125,13 +141,13 @@ export function DatasetDetail({ id }: { id: string }) {
               <Button variant="ghost" icon={<Trash2 className="size-3.5" />} onClick={() => setConfirm(true)} />
             </Tooltip>
             <Button variant="primary" icon={<FlaskConical className="size-3.5" />} onClick={() => go({ page: "new-experiment", datasetId: id })}>
-              New experiment
+              New evaluation
             </Button>
           </>
         }
       />
 
-      <div className="grid grid-cols-[minmax(0,1fr)_300px] gap-10">
+      <Panes template="minmax(0,1fr) 300px" className="gap-10">
         <div className="min-w-0">
           <CardHeader
             className="px-0 pt-0"
@@ -163,7 +179,8 @@ export function DatasetDetail({ id }: { id: string }) {
                       <th
                         key={c}
                         aria-sort={sorted ? (sort!.desc ? "descending" : "ascending") : "none"}
-                        className={clsx("group/h whitespace-nowrap border-b border-border px-3 py-2 text-left font-medium", c === column ? "text-primary" : "text-muted-foreground")}
+                        className={clsx("group/h whitespace-nowrap border-b border-border px-3 py-2 text-left font-medium", c === column ? "text-primary" : "text-muted-foreground", added.has(c) && "bg-primary/[0.04]")}
+                        title={added.has(c) ? "Stored in this dataset (the other columns are linked)" : undefined}
                       >
                         <span className="inline-flex items-center gap-1">
                           <Tooltip content={sorted ? (sort!.desc ? "Sorted Z→A · click to clear" : "Sorted A→Z · click for Z→A") : "Sort by this column"}>
@@ -197,15 +214,22 @@ export function DatasetDetail({ id }: { id: string }) {
                       <span className="flex items-center gap-1">
                         <span className="min-w-[2ch]">{i + 1}</span>
                         <Tooltip content="Open in Playground">
-                          <button onClick={() => openRow(r)} aria-label="Open in Playground" className="grid size-5 place-items-center rounded-[5px] opacity-0 group-hover:opacity-100 hover:bg-sel hover:text-foreground focus-visible:opacity-100">
+                          <button onClick={() => setOpening([i, r])} aria-label="Open in Playground" className="grid size-5 place-items-center rounded-[5px] opacity-0 group-hover:opacity-100 hover:bg-sel hover:text-foreground focus-visible:opacity-100">
                             <SquareArrowOutUpRight className="size-3" />
                           </button>
                         </Tooltip>
                       </span>
                     </td>
                     {d.columns.map((c) => (
-                      <td key={c} className={clsx("max-w-[340px] truncate border-b border-border px-3 py-1.5", c === column && "bg-primary/5")} title={r[c]}>
-                        {r[c]}
+                      <td key={c} className={clsx("border-b border-border px-3 py-1.5", c === column && "bg-primary/5")} title={r[c]}>
+                        {isImageUrl(r[c] ?? "") ? (
+                          <span className="flex max-w-[340px] items-center gap-2">
+                            <img src={fileSrc(r[c])} alt="" loading="lazy" className="size-8 shrink-0 rounded-[5px] bg-card object-cover" />
+                            <span className="truncate font-mono text-[11px] text-muted-foreground">{r[c].startsWith("data:") ? "image" : r[c].split(/[\\/]/).pop()}</span>
+                          </span>
+                        ) : (
+                          <div className="max-w-[340px] truncate">{r[c]}</div>
+                        )}
                       </td>
                     ))}
                   </tr>
@@ -237,13 +261,13 @@ export function DatasetDetail({ id }: { id: string }) {
               ) : (
                 <>
                   <div className="mb-3 flex flex-wrap gap-1.5">
-                    <Badge>{distinct >= 300 ? "300+" : distinct} distinct</Badge>
+                    <Badge>{distinct.toLocaleString()} distinct</Badge>
                     {looksCategorical ? <Badge tone="good">Looks like labels</Badge> : <Badge>Free text</Badge>}
                   </div>
                   <Distribution items={counts.slice(0, 12)} total={d.row_count} />
-                  {counts.length > 12 && (
+                  {distinct > 12 && (
                     <div className="mt-2 text-[11.5px] text-faint">
-                      +{counts.length - 12} more values ({pct(counts.slice(12).reduce((a, c) => a + c.count, 0) / d.row_count)} of rows)
+                      +{(distinct - 12).toLocaleString()} more values ({pct(1 - counts.slice(0, 12).reduce((a, c) => a + c.count, 0) / d.row_count)} of rows)
                     </div>
                   )}
                   {looksCategorical && (
@@ -257,7 +281,7 @@ export function DatasetDetail({ id }: { id: string }) {
           </div>
 
           <div className="border-b border-border pb-4">
-            <CardHeader className="px-0" title="Experiments" subtitle={exps.data?.length ? undefined : "None yet"} />
+            <CardHeader className="px-0" title="Evaluations" subtitle={exps.data?.length ? undefined : "None yet"} />
             <div className="-mx-2">
               {exps.data?.map((e) => (
                 <button key={e.id} onClick={() => go({ page: "experiment", id: e.id })} className="flex w-full items-center justify-between rounded-[6px] px-2 py-2 text-left hover:bg-sel">
@@ -274,8 +298,8 @@ export function DatasetDetail({ id }: { id: string }) {
               title="Ground-truth corrections"
               subtitle={
                 corrections.data?.length
-                  ? `${corrections.data.length} row${corrections.data.length === 1 ? "" : "s"} reviewed by a human · used by every experiment on this dataset`
-                  : "None yet — confirm or relabel rows from an experiment's predictions or review queue."
+                  ? `${corrections.data.length} row${corrections.data.length === 1 ? "" : "s"} reviewed by a human · used by every evaluation on this dataset`
+                  : "None yet — confirm or relabel rows from an evaluation's predictions or review queue."
               }
             />
             {!!corrections.data?.length && (
@@ -303,7 +327,9 @@ export function DatasetDetail({ id }: { id: string }) {
             )}
           </div>
         </div>
-      </div>
+      </Panes>
+
+      <OpenRowModal dataset={d} row={opening} onClose={() => setOpening(null)} />
 
       <Modal
         open={confirm}
@@ -331,7 +357,8 @@ export function DatasetDetail({ id }: { id: string }) {
         }
       >
         <p className="text-[13px] text-muted-foreground">
-          This removes <b className="text-foreground">{d.name}</b> and its {exps.data?.length ?? 0} experiment(s) from ClassifAI. The original file is not touched.
+          This removes <b className="text-foreground">{d.name}</b> and its {exps.data?.length ?? 0} evaluation(s) from ClassifAI. The original file is not touched.
+          {(derived.data?.length ?? 0) > 0 && ` ${derived.data!.length} dataset${derived.data!.length === 1 ? "" : "s"} saved from it (${derived.data!.map((x) => x.name).join(", ")}) keep their rows: the linked cells are copied into them.`}
         </p>
       </Modal>
     </>

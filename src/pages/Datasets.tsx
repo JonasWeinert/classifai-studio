@@ -1,9 +1,13 @@
-import { Database, FileUp, FlaskConical, LayoutGrid, List, Sparkles, Table2 } from "lucide-react";
+import { Database, FileUp, Link2, FlaskConical, LayoutGrid, List, Sparkles, Table2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { HfImportModal } from "../components/HfImport";
+import { FILE_FILTERS, FilesImportModal, ImportChooser, WorkbookImportModal, type ImportKind } from "../components/ImportDialogs";
+import { extOf, pickFiles, SPREADSHEET_EXTENSIONS, WORKBOOK_EXTENSIONS } from "../lib/api";
 import { Button, Card, Empty, ErrorNote, Input, Modal, PageHeader, Segmented, Spinner, Tooltip } from "../components/ui";
 import { api } from "../lib/api";
 import { useApp, useAsync } from "../lib/app";
 import { ago } from "../lib/format";
+import { load, save } from "../lib/persist";
 import { SAMPLE_DATASET } from "../lib/sample";
 import { useImportDataset } from "../lib/useImportDataset";
 import type { Dataset } from "../lib/types";
@@ -11,13 +15,7 @@ import type { Dataset } from "../lib/types";
 type View = "list" | "tiles";
 const VIEW_KEY = "datasets.view";
 
-function readView(): View {
-  try {
-    return localStorage.getItem(VIEW_KEY) === "tiles" ? "tiles" : "list";
-  } catch {
-    return "list";
-  }
-}
+const readView = (): View => (load<View>(VIEW_KEY, "list") === "tiles" ? "tiles" : "list");
 
 /** Rough shape of a pasted table: rows × columns, or null when it doesn't look like one. */
 function tableShape(text: string): { rows: number; cols: number } | null {
@@ -28,9 +26,30 @@ function tableShape(text: string): { rows: number; cols: number } | null {
   return { rows: lines.length - 1, cols: lines[0].split(sep).length };
 }
 
-export function Datasets() {
+export function Datasets({ hf: openHf, chooser: openChooser, workbook: openWorkbook, files: openFiles }: { hf?: boolean; chooser?: boolean; workbook?: string; files?: string[] } = {}) {
   const { go } = useApp();
-  const { data, error, loading } = useAsync(() => api.datasets(), []);
+  const { data, error, loading, reload } = useAsync(() => api.datasets(), []);
+  const [hf, setHf] = useState(!!openHf);
+  const [chooser, setChooser] = useState(!!openChooser);
+  const [workbook, setWorkbook] = useState<string | null>(openWorkbook ?? null);
+  const [files, setFiles] = useState<string[]>(openFiles ?? []);
+  useEffect(() => {
+    if (openChooser) setChooser(true);
+    if (openWorkbook) setWorkbook(openWorkbook);
+    if (openFiles?.length) setFiles(openFiles);
+  }, [openChooser, openWorkbook, openFiles]);
+  const pick = async (k: ImportKind) => {
+    setChooser(false);
+    if (k === "hf") return setHf(true);
+    if (k === "files") return setFiles(await pickFiles(FILE_FILTERS));
+    const [path] = await pickFiles([{ name: "Spreadsheets", extensions: SPREADSHEET_EXTENSIONS }], false);
+    if (!path) return;
+    if (WORKBOOK_EXTENSIONS.includes(extOf(path))) setWorkbook(path);
+    else imp.importPath(path);
+  };
+  useEffect(() => {
+    if (openHf) setHf(true);
+  }, [openHf]);
   const exps = useAsync(() => api.experiments(), []);
   const imp = useImportDataset();
   const [view, setViewState] = useState<View>(readView);
@@ -38,11 +57,7 @@ export function Datasets() {
 
   const setView = (v: View) => {
     setViewState(v);
-    try {
-      localStorage.setItem(VIEW_KEY, v);
-    } catch {
-      /* ignore */
-    }
+    save(VIEW_KEY, v);
   };
 
   // D1: paste a table copied from Excel / Numbers (TSV) or CSV text anywhere on this page.
@@ -79,12 +94,16 @@ export function Datasets() {
                 ]}
               />
             )}
-            <Button variant="primary" icon={<FileUp className="size-3.5" />} loading={imp.busy} onClick={imp.run}>
-              Import file
+            <Button variant="primary" icon={<FileUp className="size-3.5" />} loading={imp.busy} onClick={() => setChooser(true)}>
+              Import
             </Button>
           </>
         }
       />
+      <ImportChooser open={chooser} onClose={() => setChooser(false)} onPick={pick} />
+      <HfImportModal open={hf} onClose={() => setHf(false)} onImported={() => reload()} />
+      <WorkbookImportModal path={workbook} onClose={() => setWorkbook(null)} />
+      <FilesImportModal paths={files} onChange={setFiles} onClose={() => setFiles([])} />
       {error && <ErrorNote error={error} />}
       {loading && !data && <Spinner />}
       {data && data.length === 0 && (
@@ -97,7 +116,7 @@ export function Datasets() {
                 <Button icon={<Sparkles className="size-3.5" />} disabled={imp.busy} onClick={() => imp.importText(SAMPLE_DATASET.name, SAMPLE_DATASET.text)}>
                   Try with sample data
                 </Button>
-                <Button variant="primary" icon={<FileUp className="size-3.5" />} loading={imp.busy} onClick={imp.run}>
+                <Button variant="primary" icon={<FileUp className="size-3.5" />} loading={imp.busy} onClick={() => setChooser(true)}>
                   Import your first dataset
                 </Button>
               </div>
@@ -115,7 +134,7 @@ export function Datasets() {
               <th className="py-2.5 text-left font-medium">Name</th>
               <th className="px-3 py-2.5 text-right font-medium">Rows</th>
               <th className="px-3 py-2.5 text-left font-medium">Columns</th>
-              <th className="px-3 py-2.5 text-right font-medium">Experiments</th>
+              <th className="px-3 py-2.5 text-right font-medium">Evaluations</th>
               <th className="px-3 py-2.5 text-right font-medium">Imported</th>
               <th className="w-[1%] py-2.5" />
             </tr>
@@ -126,21 +145,29 @@ export function Datasets() {
               return (
                 <tr key={d.id} onClick={() => go({ page: "dataset", id: d.id })} className="group cursor-pointer border-t border-border hover:bg-sel/50">
                   <td className="py-2.5">
-                    <div className="flex items-center gap-2.5">
+                    <div className="flex max-w-[18rem] items-center gap-2.5">
                       <Table2 className="size-4 shrink-0 text-muted-foreground" />
-                      <span className="truncate font-medium">{d.name}</span>
+                      <span className="min-w-0 truncate font-medium">{d.name}</span>
+                      {d.parent_id && (
+                        <Tooltip content={`Rows linked to ${d.parent_name}; stores only ${d.added_columns?.length ?? 0} added columns`}>
+                          <span className="inline-flex max-w-[10rem] shrink-0 items-center gap-1 rounded-full bg-sel px-2 py-px text-[11px] text-muted-foreground">
+                            <Link2 className="size-3 shrink-0" /> <span className="truncate">{d.parent_name}</span>
+                          </span>
+                        </Tooltip>
+                      )}
                     </div>
                   </td>
                   <td className="px-3 py-2.5 text-right font-mono text-[12px] text-muted-foreground tnum">{d.row_count.toLocaleString()}</td>
-                  <td className="max-w-[320px] px-3 py-2.5">
-                    <Tooltip content={d.columns.join(", ")}>
+                  {/* Takes the space that's left and truncates within it (max-w-0 lets the column shrink). */}
+                  <td className="w-full max-w-0 px-3 py-2.5">
+                    <Tooltip content={d.columns.join(", ")} wrapperClassName="block">
                       <span className="block truncate font-mono text-[11.5px] text-muted-foreground">
                         <span className="text-foreground tnum">{d.columns.length}</span> · {d.columns.join(", ")}
                       </span>
                     </Tooltip>
                   </td>
                   <td className="px-3 py-2.5 text-right text-muted-foreground tnum">{n || <span className="text-faint">—</span>}</td>
-                  <td className="px-3 py-2.5 text-right text-[12px] text-faint">{ago(d.created_at)}</td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-right text-[12px] text-faint">{ago(d.created_at)}</td>
                   <td className="py-1.5 pl-2">
                     <Button
                       size="sm"
@@ -151,7 +178,7 @@ export function Datasets() {
                         go({ page: "new-experiment", datasetId: d.id });
                       }}
                     >
-                      New experiment →
+                      New evaluation →
                     </Button>
                   </td>
                 </tr>
@@ -162,7 +189,7 @@ export function Datasets() {
       )}
 
       {data && data.length > 0 && view === "tiles" && (
-        <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3">
           {data.map((d) => {
             const n = count(d);
             return (
@@ -188,7 +215,7 @@ export function Datasets() {
                 </div>
                 <div className="mt-4 flex items-center justify-between border-t border-border pt-3">
                   <span className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
-                    <FlaskConical className="size-3.5" /> {n} experiment{n === 1 ? "" : "s"}
+                    <FlaskConical className="size-3.5" /> {n} evaluation{n === 1 ? "" : "s"}
                   </span>
                   <Button
                     size="sm"
@@ -199,7 +226,7 @@ export function Datasets() {
                       go({ page: "new-experiment", datasetId: d.id });
                     }}
                   >
-                    New experiment →
+                    New evaluation →
                   </Button>
                 </div>
               </Card>

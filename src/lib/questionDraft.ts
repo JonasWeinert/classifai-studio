@@ -3,9 +3,11 @@
 import { useMemo, useSyncExternalStore } from "react";
 import { load, save } from "./persist";
 import { composeInstructions, slugId } from "./questions";
-import type { AnyAnswer, AnyQuestion, Question } from "./types";
+import { answerChoices, newRid, resolveRoutes, type Route } from "./routing";
+import { supportsFreeText } from "./models";
+import type { AnyAnswer, AnyQuestion, Question, QuestionSet } from "./types";
 
-export type Kind = "choice" | "multi" | "noul" | "score" | "rank" | "number";
+export type Kind = "choice" | "multi" | "noul" | "score" | "rank" | "number" | "text";
 
 export const KINDS: { value: Kind; label: string; hint: string }[] = [
   { value: "choice", label: "Pick one", hint: "One label from a list" },
@@ -14,6 +16,7 @@ export const KINDS: { value: Kind; label: string; hint: string }[] = [
   { value: "score", label: "Scale", hint: "2–10 ordered levels" },
   { value: "rank", label: "Rank", hint: "All options ordered from most to least fitting" },
   { value: "number", label: "Number", hint: "Expected value and 80% range over candidate values" },
+  { value: "text", label: "Free text", hint: "An open answer in words" },
 ];
 
 export interface Opt {
@@ -34,12 +37,21 @@ export interface QDraft {
   levels: string[];
   values: string;
   unit: string;
+  /** Dataset column this question was made from (Open in Playground). */
+  column?: string;
+  /** That column's value in the opened row, shown next to the answers. */
+  expected?: string;
+  /** Stable id, so follow-ups keep pointing at this question when it is reworded. */
+  rid?: string;
+  /** Follow-up: ask only when the question with rid `parent` got one of `answers`. */
+  when?: Route | null;
 }
 
 let nextKey = 1;
 export const newKey = () => nextKey++;
 export const blank = (kind: Kind = "choice", text = ""): QDraft => ({
   key: nextKey++,
+  rid: newRid(),
   kind,
   text,
   context: "",
@@ -98,8 +110,44 @@ export function buildQuestion(q: QDraft, shared: string): AnyQuestion | null {
       const values = parseValues(q.values);
       return values.length >= 2 ? { type: "number", instructions, values, unit: q.unit.trim() || null } : null;
     }
+    case "text":
+      // Only LLMs answer these; runners leave them out for decision models (see `supportsFreeText`).
+      return q.text.trim() ? { type: "text", instructions } : null;
   }
 }
+
+/**
+ * Insert a follow-up of question `key` after it and its existing follow-ups, tied to `answer`
+ * (default: its first answer). The parent gets a stable id if it has none yet.
+ */
+export function addFollowUp(qs: QDraft[], key: number, answer?: string): QDraft[] {
+  const out = qs.map((q) => (q.key === key && !q.rid ? { ...q, rid: newRid() } : q));
+  const at = out.findIndex((q) => q.key === key);
+  const parent = out[at];
+  const first = answer ?? answerChoices(parent)[0];
+  // Below the parent's block: everything after it that descends from it.
+  const inBlock = (q: QDraft): boolean => {
+    let cur: QDraft | undefined = q;
+    for (let d = 0; cur?.when && d < 10; d++) {
+      if (cur.when.parent === parent.rid) return true;
+      cur = out.find((x) => x.rid === cur!.when!.parent);
+    }
+    return false;
+  };
+  let end = at + 1;
+  while (end < out.length && inBlock(out[end])) end++;
+  const child: QDraft = { ...blank(parent.kind === "noul" ? "noul" : "choice"), when: { parent: parent.rid!, answers: first ? [first] : [] } };
+  return [...out.slice(0, end), child, ...out.slice(end)];
+}
+
+/** Remove a question; its follow-ups become regular questions. */
+export function removeQuestion(qs: QDraft[], key: number): QDraft[] {
+  const gone = qs.find((q) => q.key === key);
+  return qs.filter((q) => q.key !== key).map((q) => (gone?.rid && q.when?.parent === gone.rid ? { ...q, when: null } : q));
+}
+
+/** Is the draft complete? Free-text questions only need their wording. */
+export const isComplete = (q: QDraft, shared: string) => (q.kind === "text" ? !!q.text.trim() : !!buildQuestion(q, shared));
 
 export function headline(a: AnyAnswer): string {
   switch (a.type) {
@@ -115,6 +163,8 @@ export function headline(a: AnyAnswer): string {
       return a.ranking[0];
     case "number":
       return `${fmt(a.estimate)}${a.unit ? ` ${a.unit}` : ""}`;
+    case "text":
+      return a.text;
   }
 }
 
@@ -143,6 +193,7 @@ export function fromWire(id: string, q: Question): Omit<QDraft, "key"> {
     return { ...base, kind: "choice", options: Object.entries(criteria).map(([name, d]) => ({ name, description: typeof d === "string" ? d : "" })) };
   }
   if (q.type === "score") return { ...base, kind: "score", levels: q.criteria.map((c) => (typeof c === "string" ? c : JSON.stringify(c))) };
+  if (q.type === "text") return { ...base, kind: "text" };
   return { ...base, kind: "noul", yes: q.criteria?.true ?? "", no: q.criteria?.false ?? "" };
 }
 
@@ -151,7 +202,27 @@ export function fromWire(id: string, q: Question): Omit<QDraft, "key"> {
 export interface DraftState {
   qs: QDraft[];
   shared: string;
-  set: { id: string; name: string; version: number } | null;
+  /** The question set the draft was loaded from; `hash` tells whether it was edited since. */
+  set: { id: string; name: string; version: number; hash?: string } | null;
+}
+
+/** Fingerprint of questions + context, to tell an edited draft from its saved set. */
+export function draftHash(qs: Omit<QDraft, "key">[], context: string) {
+  return JSON.stringify([context.trim(), qs.map(({ key: _k, column: _c, expected: _e, ...q }: Partial<QDraft>) => q)]);
+}
+
+/** Replace the shared draft with questions stored elsewhere (e.g. a Bulk run's setup). */
+export function loadQuestionsIntoDraft(questions: Omit<QDraft, "key">[], context: string, set: DraftState["set"]) {
+  setState({ qs: questions.map((x) => ({ ...x, key: nextKey++ })), shared: context, set });
+}
+
+/** Replace the shared Playground/Bulk draft with a saved question set. */
+export function loadSetIntoDraft(q: QuestionSet) {
+  setState({
+    qs: q.payload.questions.map((x) => ({ ...x, key: nextKey++ })),
+    shared: q.payload.context ?? "",
+    set: { id: q.id, name: q.name, version: q.version, hash: draftHash(q.payload.questions, q.payload.context ?? "") },
+  });
 }
 
 type Persisted = Omit<DraftState, "qs"> & { qs: Omit<QDraft, "key">[] };
@@ -191,16 +262,31 @@ export function useQuestionDraft() {
   // Question ids derive from their text; the map keeps ids unique and readable.
   const built = useMemo(() => {
     const ids: string[] = [];
-    return s.qs.map((q) => {
+    const withIds = s.qs.map((q) => {
       const id = slugId(q.text || q.kind, ids);
       ids.push(id);
-      return { id, title: q.text.trim() || KINDS.find((k) => k.value === q.kind)!.label, q: buildQuestion(q, s.shared) };
+      return { ...q, id };
     });
+    const routes = resolveRoutes(withIds);
+    return withIds.map((q) => ({
+      id: q.id,
+      title: q.text.trim() || KINDS.find((k) => k.value === q.kind)!.label,
+      q: buildQuestion(q, s.shared),
+      freeText: q.kind === "text",
+      complete: isComplete(q, s.shared),
+      /** Follow-up: asked only when question `parent` (an id) got one of `answers`. */
+      route: routes.get(q.id) ?? null,
+    }));
   }, [s.qs, s.shared]);
   return {
     ...s,
     built,
-    invalid: built.filter((b) => !b.q).length,
+    invalid: built.filter((b) => !b.complete).length,
+    /** Questions decision models can answer (free-text ones are left out). */
+    sendable: built.filter((b) => b.q && b.q.type !== "text"),
+    /** Questions `model` can answer: everything for an LLM, all but free text for a decision model. */
+    sendableFor: (model: string) => built.filter((b) => b.q && (b.q.type !== "text" || supportsFreeText(model))),
+    edited: !!s.set?.hash && s.set.hash !== draftHash(s.qs, s.shared),
     setQs: (qs: QDraft[]) => setState({ qs }),
     setShared: (shared: string) => setState({ shared }),
     setSet: (set: DraftState["set"]) => setState({ set }),

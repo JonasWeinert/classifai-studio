@@ -19,7 +19,10 @@ import { FineTune } from "./pages/FineTune";
 import { Models } from "./pages/Models";
 import { NewExperiment } from "./pages/NewExperiment";
 import { Onboarding } from "./pages/Onboarding";
-import { Bulk } from "./pages/Bulk";
+import { NewBulkRun } from "./pages/Bulk";
+import { BulkRunDetail, BulkRuns } from "./pages/BulkRuns";
+import { QuestionSetEditor, QuestionSets } from "./pages/QuestionSets";
+import { LabelSessions, LabelWorkspace, NewLabelSession } from "./pages/Labelling";
 import { Playground } from "./pages/Playground";
 import { Review } from "./pages/Review";
 import { Settings } from "./pages/Settings";
@@ -30,14 +33,16 @@ if (isTauri) {
 }
 
 function routeKey(r: Route) {
-  return "id" in r ? `${r.page}:${r.id}` : r.page;
+  return "id" in r ? `${r.page}:${r.id ?? "new"}` : "from" in r ? `${r.page}:${r.from ?? ""}` : r.page;
 }
 
 const NAV: Record<string, Route> = {
   "nav:quick": { page: "quick" },
   "nav:bulk": { page: "bulk" },
-  "nav:datasets": { page: "datasets" },
   "nav:experiments": { page: "experiments" },
+  "nav:labelling": { page: "labelling" },
+  "nav:question-sets": { page: "question-sets" },
+  "nav:datasets": { page: "datasets" },
   "nav:models": { page: "models" },
 };
 
@@ -85,7 +90,7 @@ export default function App() {
       }
     };
     window.addEventListener("keydown", toggle);
-    const keys: Record<string, string> = { "1": "nav:quick", "2": "nav:bulk", "3": "nav:datasets", "4": "nav:experiments", "5": "nav:models", "[": "back", ",": "settings", n: "new-experiment", o: "import" };
+    const keys: Record<string, string> = { "1": "nav:quick", "2": "nav:bulk", "3": "nav:experiments", "4": "nav:labelling", "5": "nav:question-sets", "6": "nav:datasets", "7": "nav:models", "[": "back", ",": "settings", n: "new-experiment", o: "import" };
     const h = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
       const action = keys[e.key.toLowerCase()];
@@ -112,8 +117,7 @@ export default function App() {
             else if (p.type === "leave") setDragging(false);
             else if (p.type === "drop") {
               setDragging(false);
-              const file = p.paths.find((x) => DATA_FILE.test(x));
-              if (file) imp.importPath(file);
+              imp.importPaths(p.paths);
             }
           })
           .then((f) => (unlisten = f)),
@@ -164,9 +168,9 @@ export default function App() {
         <div
           ref={setToolbar}
           className={cn(
-            "titlebar relative z-30 flex h-[52px] shrink-0 items-center gap-3 border-b pr-6 transition-[padding,background-color,border-color] duration-300 ease-[var(--ease-out)]",
+            "titlebar relative z-30 flex h-[52px] shrink-0 items-center gap-3 border-b transition-[padding,background-color,border-color] duration-300 ease-[var(--ease-out)]",
             // With the sidebar hidden, leave room for the window's traffic lights.
-            sidebarOpen ? "pl-4" : "pl-[84px]",
+            sidebarOpen ? "pl-4 pr-[clamp(20px,2.6vw,44px)]" : "pl-[84px] pr-[clamp(20px,2.6vw,44px)]",
             scrolled ? "border-border bg-background/80 backdrop-blur-xl" : "border-transparent bg-background",
           )}
         >
@@ -178,10 +182,18 @@ export default function App() {
         </div>
         <div id="main-scroll" className="min-h-0 flex-1 overflow-y-auto" onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 4)}>
           <ToolbarContext.Provider value={toolbar}>
-            <div key={routeKey(route)} className="page-in mx-auto max-w-[1160px] px-8 pb-16 pt-6">
+            {/* Full width of whatever the sidebar leaves; the side padding grows a little with the window. */}
+            <div key={routeKey(route)} className="page-in w-full px-[clamp(20px,2.6vw,44px)] pb-16 pt-6 has-[[data-fill-height]]:pb-4">
               {route.page === "quick" && <Playground />}
-              {route.page === "bulk" && <Bulk />}
-              {route.page === "datasets" && <Datasets />}
+              {route.page === "bulk" && <BulkRuns />}
+              {route.page === "bulk-new" && <NewBulkRun from={route.from} />}
+              {route.page === "bulk-run" && <BulkRunDetail id={route.id} />}
+              {route.page === "question-sets" && <QuestionSets />}
+              {route.page === "labelling" && <LabelSessions />}
+              {route.page === "label-new" && <NewLabelSession />}
+              {route.page === "label" && <LabelWorkspace id={route.id} />}
+              {route.page === "question-set" && <QuestionSetEditor id={route.id} />}
+              {route.page === "datasets" && <Datasets hf={route.hf} chooser={route.import} workbook={route.workbook} files={route.files} />}
               {route.page === "dataset" && <DatasetDetail id={route.id} />}
               {route.page === "new-experiment" && <NewExperiment datasetId={route.datasetId} />}
               {route.page === "experiments" && <Experiments />}

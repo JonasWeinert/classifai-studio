@@ -326,3 +326,18 @@ input[type="range"] {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Tables: a td's max-width is ignored when its content is wider, so a cell that truncates needs
+   the cap on the truncating element itself: <td><div class="max-w-[20rem] truncate">…</div></td>,
+   or `w-full max-w-0` on the td for a column that takes the space left. Headers never wrap. */
+td {
+  overflow-wrap: break-word;
+}
+th {
+  white-space: nowrap;
+}
+
+/* Manual labelling: a selection in the entry takes the active question's colour (it becomes that question's context). */
+.label-entry ::selection {
+  background: color-mix(in srgb, var(--q) 32%, transparent);
+}

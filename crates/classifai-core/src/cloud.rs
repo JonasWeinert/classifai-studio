@@ -32,6 +32,8 @@ pub struct CloudAnswers {
     /// Questions the provider declined to answer; they have no entry in `answers`.
     pub refused: Vec<String>,
     pub usage: Usage,
+    /// LLMs only: the passage of the input each answer rests on, quoted verbatim by the model.
+    pub quotes: IndexMap<String, String>,
 }
 
 pub async fn decide(
@@ -53,6 +55,12 @@ pub async fn decide(
             questions.len()
         )));
     }
+    if provider.kind.is_llm() {
+        return crate::llm::decide(http, provider, key, model, state, questions).await;
+    }
+    if questions.values().any(|q| matches!(q, Question::Text { .. })) {
+        return Err(Error::invalid(format!("{} is a decision model and can't answer free-text questions; use an LLM", provider.name)));
+    }
     let base = provider
         .base_url()
         .ok_or_else(|| Error::invalid(format!("{} has no base URL; set one under Providers", provider.name)))?;
@@ -70,13 +78,14 @@ pub async fn decide(
         ProviderKind::Openai => {
             (format!("{}/v1/decisions", api_root(base)), serde_json::to_value(openai_request(model, state, questions))?)
         }
+        ProviderKind::Chat | ProviderKind::Anthropic => unreachable!("LLM providers are handled above"),
     };
-    let text = send(http, provider, &url, key, &body).await?;
+    let text = send(http, provider, &url, key, &body, Auth::Bearer).await?;
     let v: Value = serde_json::from_str(&text).map_err(|e| bad_response(provider, e))?;
     match provider.kind {
         ProviderKind::Openai => openai_response(v, questions),
         ProviderKind::Cloudflare => systemone_response(unwrap_cloudflare(v)?),
-        ProviderKind::Typesafe | ProviderKind::Custom => systemone_response(v),
+        ProviderKind::Typesafe | ProviderKind::Custom | ProviderKind::Chat | ProviderKind::Anthropic => systemone_response(v),
     }
     .map_err(|e| match e {
         Error::Json(e) => bad_response(provider, e),
@@ -94,12 +103,27 @@ fn bad_response(provider: &Provider, e: impl std::fmt::Display) -> Error {
     Error::Api { status: 200, code: "BAD_RESPONSE".into(), message: format!("{}: unexpected response: {e}", provider.name) }
 }
 
-async fn send(http: &reqwest::Client, provider: &Provider, url: &str, key: Option<&str>, body: &Value) -> Result<String> {
+/// How the API key is sent.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Auth {
+    /// `Authorization: Bearer …` (most providers)
+    Bearer,
+    /// `x-api-key` plus `anthropic-version`
+    Anthropic,
+}
+
+pub(crate) async fn send(http: &reqwest::Client, provider: &Provider, url: &str, key: Option<&str>, body: &Value, auth: Auth) -> Result<String> {
     let mut attempt = 1;
     loop {
         let mut req = http.post(url).json(body).timeout(REQUEST_TIMEOUT);
+        if let Auth::Anthropic = auth {
+            req = req.header("anthropic-version", "2023-06-01");
+        }
         if let Some(k) = key.filter(|k| !k.is_empty()) {
-            req = req.bearer_auth(k);
+            req = match auth {
+                Auth::Bearer => req.bearer_auth(k),
+                Auth::Anthropic => req.header("x-api-key", k),
+            };
         }
         let resp = req.send().await.map_err(|e| {
             if e.is_connect() || e.is_timeout() {
@@ -193,6 +217,85 @@ pub(crate) fn error_detail(body: &str) -> (Option<String>, Option<String>) {
     (str_of(v.get("message")), None)
 }
 
+// ---- model lists --------------------------------------------------------------------------
+
+/// A model a provider offers, from its model list (`GET /v1/models`).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RemoteModel {
+    /// The name requests use.
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub context_length: Option<u64>,
+    /// USD per million tokens, when the provider publishes prices (OpenRouter does).
+    pub input_price_per_mtok: Option<f64>,
+    pub output_price_per_mtok: Option<f64>,
+    /// Whether the model supports JSON-schema output, when the provider says (OpenRouter does).
+    pub structured_output: Option<bool>,
+}
+
+/// The provider's models, sorted by name. Works for OpenAI-compatible lists (OpenAI, OpenRouter,
+/// Groq, Ollama, LM Studio, most gateways) and Anthropic's.
+pub async fn list_models(http: &reqwest::Client, provider: &Provider, key: Option<&str>) -> Result<Vec<RemoteModel>> {
+    if provider.kind == ProviderKind::Cloudflare {
+        return Err(Error::invalid("Cloudflare doesn't list its decision models; enter the model name"));
+    }
+    let base = provider
+        .base_url()
+        .ok_or_else(|| Error::invalid(format!("{} has no base URL; set one under Providers", provider.name)))?;
+    let anthropic = provider.kind == ProviderKind::Anthropic;
+    let url = format!("{}/v1/models{}", api_root(base), if anthropic { "?limit=1000" } else { "" });
+    let mut req = http.get(&url).timeout(Duration::from_secs(20));
+    if anthropic {
+        req = req.header("anthropic-version", "2023-06-01");
+    }
+    if let Some(k) = key.filter(|k| !k.is_empty()) {
+        req = if anthropic { req.header("x-api-key", k) } else { req.bearer_auth(k) };
+    }
+    let resp = req.send().await.map_err(|e| Error::Api {
+        status: 0,
+        code: "PROVIDER_UNREACHABLE".into(),
+        message: format!("{} could not be reached: {e}", provider.name),
+    })?;
+    let status = resp.status().as_u16();
+    let text = resp.text().await.unwrap_or_default();
+    if !(200..300).contains(&status) {
+        return Err(api_error(provider, status, &text));
+    }
+    let v: Value = serde_json::from_str(&text).map_err(|e| bad_response(provider, e))?;
+    Ok(parse_model_list(&v))
+}
+
+pub(crate) fn parse_model_list(v: &Value) -> Vec<RemoteModel> {
+    let items = v.get("data").or_else(|| v.get("models")).and_then(Value::as_array).cloned().unwrap_or_default();
+    let s = |m: &Value, k: &str| m.get(k).and_then(Value::as_str).map(str::trim).filter(|x| !x.is_empty()).map(str::to_string);
+    // Prices are USD per token, sent as strings; "-1" or missing means unknown.
+    let price = |m: &Value, k: &str| {
+        let p = m.get("pricing")?.get(k)?;
+        let x = p.as_f64().or_else(|| p.as_str()?.parse().ok())?;
+        (x >= 0.0).then(|| (x * 1e6 * 1e6).round() / 1e6)
+    };
+    let mut out: Vec<RemoteModel> = items
+        .iter()
+        .filter_map(|m| {
+            let id = s(m, "id").or_else(|| s(m, "name"))?;
+            let params = m.get("supported_parameters").and_then(Value::as_array);
+            Some(RemoteModel {
+                name: s(m, "display_name").or_else(|| s(m, "name")).unwrap_or_else(|| id.clone()),
+                description: s(m, "description"),
+                context_length: m.get("context_length").and_then(Value::as_u64),
+                input_price_per_mtok: price(m, "prompt"),
+                output_price_per_mtok: price(m, "completion"),
+                structured_output: params.map(|p| p.iter().any(|x| matches!(x.as_str(), Some("structured_outputs" | "response_format")))),
+                id,
+            })
+        })
+        .collect();
+    out.sort_by_key(|m| m.name.to_lowercase());
+    out.dedup_by(|a, b| a.id == b.id);
+    out
+}
+
 // ---- TypeSafe System One (typesafe, custom, cloudflare) -------------------------------------
 
 #[derive(Serialize)]
@@ -213,7 +316,7 @@ struct SystemOneResponse {
 
 fn systemone_response(v: Value) -> Result<CloudAnswers> {
     let r: SystemOneResponse = serde_json::from_value(v)?;
-    Ok(CloudAnswers { model: r.model, answers: r.answers, refused: Vec::new(), usage: r.usage })
+    Ok(CloudAnswers { model: r.model, answers: r.answers, refused: Vec::new(), usage: r.usage, quotes: IndexMap::new() })
 }
 
 /// Workers AI wraps results as `{result, success, errors, messages}`; a failure becomes an error.
@@ -301,8 +404,10 @@ pub(crate) fn openai_request(model: &str, state: &Value, questions: &IndexMap<St
         Value::String(s) => s.clone(),
         v => v.to_string(),
     };
+    // Free text never reaches a decision provider (`decide` refuses it); skipped here for completeness.
     let questions = questions
         .iter()
+        .filter(|(_, q)| !matches!(q, Question::Text { .. }))
         .map(|(name, q)| {
             let name = name.clone();
             match q {
@@ -326,6 +431,7 @@ pub(crate) fn openai_request(model: &str, state: &Value, questions: &IndexMap<St
                     instructions: non_empty(instructions.as_deref()).map(Into::into),
                     levels: criteria.iter().map(|l| OaiLevel { label: l.clone(), description: None }).collect(),
                 },
+                Question::Text { instructions } => OaiQuestion::Predicate { name, instructions: instructions.clone().unwrap_or_default() },
             }
         })
         .collect();
@@ -442,7 +548,7 @@ pub(crate) fn openai_response(v: Value, questions: &IndexMap<String, Question>) 
             }
         }
     }
-    Ok(CloudAnswers { model: r.model, answers, refused, usage: r.usage })
+    Ok(CloudAnswers { model: r.model, answers, refused, usage: r.usage, quotes: IndexMap::new() })
 }
 
 #[cfg(test)]
@@ -572,6 +678,21 @@ mod tests {
         let e = api_error(&p, 401, r#"{"error":{"message":"Incorrect API key provided."}}"#);
         assert_eq!(e.code(), "UNAUTHORIZED");
         assert_eq!(e.to_string(), "OpenAI: Incorrect API key provided. Check the API key under Providers. (UNAUTHORIZED)");
+    }
+
+    #[test]
+    fn model_lists() {
+        let v = serde_json::json!({ "data": [
+            { "id": "openai/gpt-5-mini", "name": "OpenAI: GPT-5 Mini", "context_length": 400000,
+              "pricing": { "prompt": "0.00000025", "completion": "0.000002" }, "supported_parameters": ["tools", "structured_outputs"] },
+            { "id": "claude-haiku-4-5-20251001", "display_name": "Claude Haiku 4.5", "type": "model" },
+            { "id": "llama3.1:8b", "object": "model", "owned_by": "library" },
+        ]});
+        let m = parse_model_list(&v);
+        assert_eq!(m.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), vec!["claude-haiku-4-5-20251001", "llama3.1:8b", "openai/gpt-5-mini"]);
+        assert_eq!(m[0].name, "Claude Haiku 4.5");
+        assert_eq!((m[2].input_price_per_mtok, m[2].output_price_per_mtok, m[2].structured_output), (Some(0.25), Some(2.0), Some(true)));
+        assert_eq!((m[1].input_price_per_mtok, m[1].structured_output), (None, None));
     }
 
     #[test]

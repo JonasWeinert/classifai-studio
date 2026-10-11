@@ -77,11 +77,20 @@ const providers: Provider[] = [
     models: [cm("openai", "gpt-6-luna", "GPT-6 Luna", "OpenAI's Decisions API (beta). Predicates, choices and scores with probabilities.", 0.1)] },
   { id: "cloudflare", kind: "cloudflare", name: "Cloudflare Workers AI", base_url: null, account_id: null, has_key: false, key_hint: null, builtin: true,
     models: [cm("cloudflare", "clef-flash", "Clef Flash", "Cloudflare's 9B Clef with a joint schema head. 65k context.", 0.09), cm("cloudflare", "clef", "Clef", "The 27B Clef. Higher accuracy, 65k context, reads images.", 0.24, false)] },
+  { id: "anthropic", kind: "anthropic", name: "Anthropic", base_url: null, account_id: null, has_key: true, key_hint: "…7c2e", builtin: true,
+    models: [{ ...cm("anthropic", "claude-haiku-4-5-20251001", "Claude Haiku 4.5", "Fast, inexpensive LLM; answers through structured output.", 1), output_price_per_mtok: 5, default_output_price_per_mtok: 5 }] },
+  { id: "openai-chat", kind: "chat", name: "OpenAI (LLM)", base_url: null, account_id: null, has_key: false, key_hint: null, builtin: true, models: [] },
 ];
 const usageLog: { model: string; tokens: number; cost: number; exp?: string }[] = [
   { model: "@typesafe/jev-latest", tokens: 182_400, cost: 0.0077 },
   { model: "laya:latest", tokens: 96_000, cost: 0 },
 ];
+/** LLMs quote a supporting passage: here a sentence of the input (slightly reworded for the second question, to show a close match). */
+const llmQuotes = (model: string, q: Record<string, unknown>, state: string) => {
+  if (!model.startsWith("@anthropic/") && !providers.some((p) => p.kind === "chat" && model.startsWith(`@${p.id}/`))) return undefined;
+  const sentences = String(state).split(/(?<=[.!?])\s+/).filter(Boolean);
+  return Object.fromEntries(Object.keys(q).map((id, i) => [id, i === 1 ? (sentences[0] ?? "").replace(/\btwice\b/, "two times") : i === 2 ? "" : sentences[i % Math.max(1, sentences.length)] ?? ""]));
+};
 const cloudFor = (id: string) => providers.flatMap((p) => p.models).find((m) => m.id === id);
 
 // ---- demo dataset ---------------------------------------------------------------------------
@@ -232,6 +241,12 @@ async function runExperiment(id: string) {
   const e = experiments.find((x) => x.id === id)!;
   e.status = "running";
   for (const m of e.config.models) {
+    const key = m.replace(/:latest$/, "");
+    if (!m.startsWith("@") && !mockLoaded.has(key)) {
+      emit("experiment://progress", { experiment_id: id, model: m, done: e.progress[m] ?? 0, total: e.row_indices.length, status: "running", message: `Loading ${m}…`, loading: true });
+      await sleep(3000);
+      mockLoaded.add(key);
+    }
     for (const i of e.row_indices) {
       if (e.status !== "running") return;
       await sleep(25);
@@ -252,11 +267,46 @@ function dist(keys: string[], boost: number) {
   return Object.fromEntries(keys.map((k, i) => [k, raw[i] / sum])) as Record<string, number>;
 }
 
-function quick(model: string, questions: Record<string, AnyQuestion>): Record<string, AnyAnswer> {
+/** Words (4+ letters) of a question's wording, for the mock's keyword evidence. */
+const cue = (...parts: (string | null | undefined)[]) => parts.filter(Boolean).join(" ").toLowerCase().match(/[a-z]{4,}/g) ?? [];
+const hits = (words: string[], text: string) => words.filter((w) => text.includes(w)).length;
+
+// Answers depend only on the model, the questions and keywords in the text, so the same input
+// gives the same answer and removing a telling word moves it (which "Why?" relies on).
+function quick(model: string, questions: Record<string, AnyQuestion>, text = ""): Record<string, AnyAnswer> {
+  const saved = seed;
+  seed = [...(model + JSON.stringify(questions))].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 2147483646, 7) + 1;
+  const lower = text.toLowerCase();
+  const out = quickRandom(model, questions);
+  seed = saved;
+  for (const [id, q] of Object.entries(questions)) {
+    const a = out[id];
+    if (a.type === "noul" && q.type === "noul") {
+      const e = hits(cue(q.instructions, q.criteria?.true), lower) - hits(cue(q.criteria?.false), lower);
+      const z = Math.log(a.noul / (1 - a.noul + 1e-9) + 1e-9) + 1.4 * e;
+      a.noul = Math.round((1 / (1 + Math.exp(-z))) * 10000) / 10000;
+    } else if ((a.type === "choice" || a.type === "rank" || a.type === "score") && (q.type === "choice" || q.type === "rank" || q.type === "score")) {
+      const keys = Object.keys(a.probabilities);
+      const desc = (k: string) => (q.type === "score" ? q.criteria[Number(k)] : (q.criteria as Record<string, string | null>)[k]);
+      const raw = keys.map((k) => a.probabilities[k] * Math.exp(0.9 * hits(cue(k, desc(k)), lower)));
+      const sum = raw.reduce((x, y) => x + y, 0);
+      keys.forEach((k, i) => (a.probabilities[k] = raw[i] / sum));
+      const top = keys.reduce((x, y) => (a.probabilities[x] > a.probabilities[y] ? x : y));
+      const confidence = keys.length > 1 ? (keys.length * a.probabilities[top] - 1) / (keys.length - 1) : 1;
+      if (a.type === "choice") Object.assign(a, { choice: top, confidence });
+      else if (a.type === "rank") Object.assign(a, { ranking: [...keys].sort((x, y) => a.probabilities[y] - a.probabilities[x]), confidence });
+      else Object.assign(a, { score: keys.reduce((x, k) => x + Number(k) * a.probabilities[k], 0), confidence });
+    }
+  }
+  return out;
+}
+
+function quickRandom(model: string, questions: Record<string, AnyQuestion>): Record<string, AnyAnswer> {
   const out: Record<string, AnyAnswer> = {};
   const boost = model.includes("laya") ? 1.2 : 0.4;
   for (const [id, q] of Object.entries(questions)) {
     if (q.type === "noul") out[id] = { type: "noul", noul: Math.round(rand() * 10000) / 10000 };
+    else if (q.type === "text") out[id] = { type: "text", text: "A short written answer from the model." };
     else if (q.type === "multi") {
       const probabilities = Object.fromEntries(Object.keys(q.criteria).map((k, i) => [k, i === 0 ? 0.6 + rand() * 0.4 : rand()]));
       const t = q.threshold ?? 0.5;
@@ -290,6 +340,50 @@ const presetQuestions: Record<string, Record<string, AnyQuestion>> = {
     churn_risk: { type: "noul" },
   },
 };
+
+const MOCK_UI = "classifai-mock-ui:";
+/** Local models "in memory" (the mock's /api/ps). */
+const mockLoaded = new Set<string>(["nli"]);
+let hfToken: string | null = null;
+
+// ---- manual labelling (in memory) -------------------------------------------------------------
+interface MockLabel { id: string; name: string; dataset_id: string; dataset_name: string; columns: string[]; question_set_id: string | null; question_set_version: number | null; questions: any; titles: Record<string, string>; row_order: number[]; position: number; saved_dataset_id: string | null; created_at: string; updated_at: string; answers: Record<number, Record<string, unknown>>; marks: Record<number, { skipped: boolean; flagged: boolean; note: string | null }>; evidence?: Record<number, Record<string, unknown[]>> }
+const labelSessions: MockLabel[] = [];
+const labelSummary = ({ answers, marks, evidence: _e, ...l }: MockLabel) => {
+  const ids = Object.keys(l.titles);
+  const counts = l.row_order.map((i) => ids.filter((q) => answers[i]?.[q] !== undefined).length);
+  return { ...l, saved_dataset_name: datasets.find((d) => d.id === l.saved_dataset_id)?.name ?? null, total: l.row_order.length, done: counts.filter((c) => c >= ids.length).length, partial: counts.filter((c) => c > 0 && c < ids.length).length, skipped: Object.values(marks).filter((m) => m.skipped).length, flagged: Object.values(marks).filter((m) => m.flagged).length };
+};
+
+// ---- bulk runs (in memory) --------------------------------------------------------------------
+interface MockBulkRow { pos: number; idx: number; input: string | null; answers?: unknown; error?: unknown; latency?: number | null; cost?: number | null }
+interface MockBulk { id: string; name: string; model: string; source: string; dataset_id: string | null; dataset_name: string | null; columns: string[]; titles: Record<string, string>; setup: unknown; status: string; saved_dataset_id: string | null; created_at: string; finished_at: string | null; rows: MockBulkRow[] }
+const bulkRuns: MockBulk[] = [];
+const bulkSummary = ({ rows, ...b }: MockBulk) => ({
+  ...b, saved_dataset_name: datasets.find((d) => d.id === b.saved_dataset_id)?.name ?? null,
+  total: rows.length, answered: rows.filter((x) => x.answers).length, failed: rows.filter((x) => x.error).length, cost_usd: rows.reduce((a, x) => a + (x.cost ?? 0), 0),
+});
+function bulkRowView(b: MockBulk, row: MockBulkRow) {
+  if (!b.dataset_id) return { ...row, input: row.input ?? "", fields: null };
+  const data = rowsByDataset[b.dataset_id]?.[row.idx] ?? {};
+  const fields = Object.fromEntries(b.columns.map((c) => [c, data[c] ?? ""]));
+  return { ...row, input: b.columns.length === 1 ? fields[b.columns[0]] : b.columns.map((c) => `${c}: ${fields[c]}`).join("\n"), fields };
+}
+
+/** Mock of the store's derived datasets: rows are materialised here, the metadata matches. */
+function derive(parentId: string, name: string, rows: [number, Row][], source: string | null): Dataset {
+  const parent = datasets.find((d) => d.id === parentId)!;
+  const base = rowsByDataset[parentId] ?? [];
+  const added = [...new Set(rows.flatMap(([, c]) => Object.keys(c)))];
+  const rename = Object.fromEntries(added.map((c) => { let n = c, k = 2; while (parent.columns.includes(n)) n = `${c} ${k++}`; return [c, n]; }));
+  const d: Dataset = {
+    id: `ds-${Date.now()}`, name, source, columns: [...parent.columns, ...added.map((c) => rename[c])], row_count: rows.length, created_at: new Date().toISOString(),
+    parent_id: parent.parent_id ?? parent.id, parent_name: parent.parent_name ?? parent.name, added_columns: [...(parent.added_columns ?? []), ...added.map((c) => rename[c])],
+  };
+  datasets.unshift(d);
+  rowsByDataset[d.id] = rows.map(([i, cells]) => ({ ...base[i], ...Object.fromEntries(Object.entries(cells).map(([k, v]) => [rename[k], v])) }));
+  return d;
+}
 
 export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Promise<T> {
   await sleep(60);
@@ -332,6 +426,21 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
       return r(p);
     }
     case "provider_delete": { const i = providers.findIndex((p) => p.id === args.id); if (i >= 0) providers.splice(i, 1); return r(undefined); }
+    case "provider_models": {
+      await sleep(400);
+      const p = providers.find((x) => x.id === args.id);
+      if (p?.kind === "cloudflare") throw { code: "INVALID", message: "Cloudflare doesn't list its decision models; enter the model name" };
+      const m = (id: string, name: string, input: number | null, output: number | null, ctx: number | null, so: boolean | null, description: string | null = null) => ({ id, name, description, context_length: ctx, input_price_per_mtok: input, output_price_per_mtok: output, structured_output: so });
+      if (p?.kind === "anthropic") return r([m("claude-haiku-4-5-20251001", "Claude Haiku 4.5", null, null, null, null), m("claude-sonnet-5-5", "Claude Sonnet 5.5", null, null, null, null), m("claude-opus-5-5", "Claude Opus 5.5", null, null, null, null)]);
+      return r([
+        m("openai/gpt-5-mini", "OpenAI: GPT-5 Mini", 0.25, 2, 400000, true, "Small, fast GPT-5 for well-defined tasks."),
+        m("anthropic/claude-haiku-4.5", "Anthropic: Claude Haiku 4.5", 1, 5, 200000, true, "Anthropic's fastest model."),
+        m("google/gemini-2.5-flash", "Google: Gemini 2.5 Flash", 0.3, 2.5, 1048576, true, "Workhorse model with thinking."),
+        m("meta-llama/llama-3.1-8b-instruct", "Meta: Llama 3.1 8B Instruct", 0.02, 0.03, 131072, false, "Small open model."),
+        m("mistralai/mistral-small-3.2", "Mistral: Mistral Small 3.2", 0.05, 0.1, 128000, true),
+        m("qwen/qwen3-30b-a3b", "Qwen: Qwen3 30B A3B", 0.08, 0.29, 40960, true),
+      ]);
+    }
     case "provider_test": {
       await sleep(600);
       const p = providers.find((x) => x.id === args.id)!;
@@ -398,7 +507,7 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
       const inp = args.input;
       let q = questionSets.find((x) => x.id === inp.id);
       if (!q) { q = { id: inp.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name: inp.name, description: inp.description ?? "", version: 0, payload: inp.payload, updated_at: "" }; questionSets.unshift(q); }
-      Object.assign(q, { name: inp.name, description: inp.description ?? q.description, payload: inp.payload, version: q.version + 1, updated_at: new Date().toISOString() });
+      Object.assign(q, { name: inp.name, description: inp.description ?? q.description, payload: inp.payload, version: inp.amend && q.version > 0 ? q.version : q.version + 1, updated_at: new Date().toISOString() });
       return r({ ...q, question_count: q.payload.questions.length });
     }
     case "question_set_delete": { const i = questionSets.findIndex((q) => q.id === args.id); if (i >= 0) questionSets.splice(i, 1); return r(undefined); }
@@ -415,8 +524,13 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
     ]);
     case "preset_show": return r(presetQuestions[args.name] ?? presetQuestions.triage);
     case "save_text_file": return r(undefined);
+    case "read_text_file": return r(JSON.stringify({ $schema: "https://json-schema.org/draft/2020-12/schema", title: "Abstract screening", description: "Abstracts of studies on remote work and wellbeing.", type: "object", properties: { design: { type: "string", enum: ["RCT", "cohort", "cross-sectional", "qualitative"], description: "What is the study design?" }, include: { type: "boolean", description: "The study meets the inclusion criteria." }, quality: { type: "integer", minimum: 1, maximum: 5, title: "Reporting quality" }, outcomes: { type: "array", items: { enum: ["stress", "productivity", "sleep"] }, description: "Which outcomes are measured?" }, sample: { type: "integer", minimum: 0, maximum: 5000, description: "How many participants?" }, finding: { type: "string", description: "Main finding in one sentence" } } }, null, 2));
     case "presets_list": return r([{ name: "triage", builtin: true, description: "Support tickets: intent, urgency, frustration, refund request, churn risk", questions: ["intent", "is_urgent", "frustration", "churn_risk"] }, { name: "moderation", builtin: true, description: "Content moderation", questions: ["toxic", "category"] }]);
+    case "models_loaded": return r([...mockLoaded]);
     case "quick_classify": {
+      // A cold local model is loaded first (a few seconds), as the real engine does.
+      const cold = !args.req.model.startsWith("@") && !mockLoaded.has(args.req.model.replace(/:latest$/, ""));
+      if (cold) { await sleep(3500); mockLoaded.add(args.req.model.replace(/:latest$/, "")); }
       const q = args.req.questions ?? presetQuestions[args.req.preset] ?? presetQuestions.triage;
       const ms = (speed[args.req.model.replace(":latest", "")] ?? 200) * (0.7 + rand() * 0.6);
       await sleep(Math.min(ms, 900));
@@ -424,11 +538,120 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
       const tokens = 40 + Object.keys(q).length * 30;
       const cost = cloud ? (tokens * cloud.input_price_per_mtok) / 1e6 : 0;
       usageLog.push({ model: args.req.model, tokens, cost });
-      return r({ model: args.req.model, answered_by: args.req.model === "laya:latest" ? "laya:en" : args.req.model, answers: quick(args.req.model, q), routing: args.req.model === "laya:latest" ? { router: "laya:latest", model: "laya:en", route: "english", reason: "English Latin text" } : null, latency_ms: ms, load_ms: 0, state_truncated: false, usage: { input_tokens: tokens, output_tokens: 0 }, cost_usd: cost, refused: [] });
+      return r({ model: args.req.model, answered_by: args.req.model === "laya:latest" ? "laya:en" : args.req.model, answers: quick(args.req.model, q, args.req.state ?? ""), routing: args.req.model === "laya:latest" ? { router: "laya:latest", model: "laya:en", route: "english", reason: "English Latin text" } : null, latency_ms: ms, load_ms: 0, state_truncated: false, usage: { input_tokens: tokens, output_tokens: 0 }, cost_usd: cost, refused: [], quotes: llmQuotes(args.req.model, q, args.req.state ?? "") });
     }
     case "dataset_import": {
       const d: Dataset = { id: `ds-${datasets.length + 1}`, name: args.name ?? "support_tickets_copy", source: args.path, columns: datasets[0].columns, row_count: demoRows.length, created_at: new Date().toISOString() };
       datasets.unshift(d); rowsByDataset[d.id] = demoRows; return r(d);
+    }
+    case "ui_state_get": {
+      const out: Record<string, unknown> = {};
+      try { for (const k of Object.keys(localStorage)) if (k.startsWith(MOCK_UI)) out[k.slice(MOCK_UI.length)] = JSON.parse(localStorage.getItem(k)!); } catch { /* none */ }
+      return r(out);
+    }
+    case "ui_state_set": {
+      try { if (args.value === null || args.value === undefined) localStorage.removeItem(MOCK_UI + args.key); else localStorage.setItem(MOCK_UI + args.key, JSON.stringify(args.value)); } catch { /* none */ }
+      return r(undefined);
+    }
+    case "dataset_create": {
+      const d: Dataset = { id: `ds-${Date.now()}`, name: args.name, source: null, columns: args.columns, row_count: args.rows.length, created_at: new Date().toISOString(), parent_id: null, parent_name: null, added_columns: [] };
+      datasets.unshift(d); rowsByDataset[d.id] = args.rows; return r(d);
+    }
+    case "dataset_derive": return r(derive(args.parentId, args.name, args.rows, args.source ?? null));
+    case "experiment_save_as_dataset": {
+      const e = experiments.find((x) => x.id === args.id)!;
+      const many = e.config.models.length > 1;
+      const rows = e.row_indices.map((idx) => {
+        const cells: Row = {};
+        for (const p of (preds[e.id] ?? []).filter((p) => p.row_idx === idx)) {
+          const col = many ? `${p.q} · ${p.model.replace(/:latest$/, "").replace(/^@[^/]+\//, "")}` : p.q;
+          cells[col] = p.predicted ?? "";
+          cells[`${col} confidence`] = p.confidence?.toFixed(3) ?? "";
+        }
+        return [idx, cells] as [number, Row];
+      });
+      return r(derive(e.dataset_id, args.name || `${e.name} results`, rows, `Evaluation: ${e.name}`));
+    }
+    case "bulk_runs_list": return r(bulkRuns.map(bulkSummary));
+    case "bulk_run_get": { const b = bulkRuns.find((x) => x.id === args.id)!; return r({ ...bulkSummary(b), rows: b.rows.map((row) => bulkRowView(b, row)) }); }
+    case "bulk_run_create": {
+      const i = args.input; const ds = datasets.find((d) => d.id === i.dataset_id);
+      const b: MockBulk = { id: `bulk-${Date.now()}`, name: i.name, model: i.model, source: i.source, dataset_id: ds?.id ?? null, dataset_name: ds?.name ?? null, columns: i.columns, titles: i.titles, setup: i.setup, status: "running", saved_dataset_id: null, created_at: new Date().toISOString(), finished_at: null,
+        rows: i.entries.map((e: { row_idx: number; input?: string }, pos: number) => ({ pos, idx: e.row_idx, input: ds ? null : e.input ?? "" })) };
+      bulkRuns.unshift(b); return r(bulkSummary(b));
+    }
+    case "bulk_results_put": { const b = bulkRuns.find((x) => x.id === args.id); for (const res of args.results) Object.assign(b!.rows[res.pos], { answers: res.answers ?? null, error: res.error ?? null, latency: res.latency_ms ?? null, cost: res.cost_usd ?? null }); return r(undefined); }
+    case "bulk_run_finish": { const b = bulkRuns.find((x) => x.id === args.id); if (b) { b.status = args.status; b.finished_at = new Date().toISOString(); } return r(undefined); }
+    case "bulk_run_rename": { const b = bulkRuns.find((x) => x.id === args.id); if (b) b.name = args.name; return r(undefined); }
+    case "bulk_run_set_saved": { const b = bulkRuns.find((x) => x.id === args.id); if (b) b.saved_dataset_id = args.datasetId; return r(undefined); }
+    case "bulk_run_delete": { const i = bulkRuns.findIndex((x) => x.id === args.id); if (i >= 0) bulkRuns.splice(i, 1); return r(undefined); }
+    case "hf_info": {
+      await sleep(500);
+      const name = String(args.dataset).replace(/^.*huggingface\.co\/datasets\//, "").split("/").slice(0, 2).join("/");
+      if (!name.includes("/") && name !== "imdb") throw { code: "INVALID", message: "Hugging Face did not find this dataset. If it is private or gated, add your Hugging Face token" };
+      return r({ dataset: name, can_filter: true, can_search: true, configs: [{ config: "plain_text", features: [{ name: "text", kind: "string", labels: null }, { name: "label", kind: "ClassLabel", labels: ["neg", "pos"] }], splits: [{ split: "train", num_rows: 25000 }, { split: "test", num_rows: 25000 }, { split: "unsupervised", num_rows: 50000 }] }] });
+    }
+    case "hf_import": {
+      const spec = args.spec; const out: Dataset[] = [];
+      const short = spec.dataset.split("/").pop();
+      const want = (sel: any, total: number) => (sel.kind === "full" ? total : Math.min(sel.n, total));
+      const tables = spec.parts.map((p: any, i: number) => {
+        const n = Math.min(want(p.selection, 25000), 400);
+        const rows: Row[] = Array.from({ length: n }, (_, k) => ({ text: `${phrases[departments[k % 4]][k % 5]} (${p.split} #${k})`, label: k % 3 ? "pos" : "neg" }));
+        emit("hf://progress", { part: i, parts: spec.parts.length, label: p.split, done: n, total: n });
+        return { split: p.split, rows };
+      });
+      await sleep(900);
+      const cols = spec.columns?.length ? spec.columns : ["text", "label"];
+      const make = (name: string, rows: Row[], columns: string[]) => { const d: Dataset = { id: `ds-${Date.now()}-${out.length}`, name, source: `hf://datasets/${spec.dataset}`, columns, row_count: rows.length, created_at: new Date().toISOString(), parent_id: null, parent_name: null, added_columns: [] }; datasets.unshift(d); rowsByDataset[d.id] = rows; out.push(d); };
+      if (spec.combine && tables.length > 1) make(spec.name || short, tables.flatMap((t: any) => t.rows.map((row: Row) => ({ ...row, split: t.split }))), [...cols, "split"]);
+      else tables.forEach((t: any) => make(tables.length === 1 && spec.name ? spec.name : `${spec.name || short} · ${t.split}`, t.rows, cols));
+      return r(out);
+    }
+    case "hf_cancel": return r(undefined);
+    case "hf_token_status": return r(hfToken ? `…${hfToken.slice(-4)}` : null);
+    case "hf_token_set": hfToken = args.token.trim() || null; return r(undefined);
+    case "dataset_rows_at": { const rows = rowsByDataset[args.id] ?? []; return r(args.indices.filter((i: number) => rows[i]).map((i: number) => [i, rows[i]])); }
+    case "label_sessions_list": return r(labelSessions.map(labelSummary));
+    case "label_session_get": { const l = labelSessions.find((x) => x.id === args.id); if (!l) throw { code: "NOT_FOUND", message: `labelling session ${args.id} not found` }; return r({ ...labelSummary(l), answers: l.answers, marks: l.marks, evidence: l.evidence ?? {} }); }
+    case "label_session_create": {
+      const i = args.input; const d = datasets.find((x) => x.id === i.dataset_id)!;
+      const n = Math.min(i.limit ?? d.row_count, d.row_count);
+      let order = Array.from({ length: d.row_count }, (_, k) => k);
+      if (i.order === "random") order = order.map((v) => [rand(), v] as const).sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+      const l: MockLabel = { id: `lab-${Date.now()}`, name: i.name, dataset_id: d.id, dataset_name: d.name, columns: i.columns, question_set_id: i.question_set_id ?? null, question_set_version: i.question_set_version ?? null, questions: i.questions, titles: i.titles, row_order: order.slice(0, n), position: 0, saved_dataset_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), answers: {}, marks: {} };
+      labelSessions.unshift(l); return r(labelSummary(l));
+    }
+    case "label_answer_set": { const l = labelSessions.find((x) => x.id === args.id)!; const a = (l.answers[args.rowIdx] ??= {}); if (args.value === null || args.value === undefined) delete a[args.questionId]; else a[args.questionId] = args.value; l.updated_at = new Date().toISOString(); return r(undefined); }
+    case "label_evidence_set": { const l = labelSessions.find((x) => x.id === args.id)!; const e = ((l.evidence ??= {})[args.rowIdx] ??= {}); if (args.snippets.length) e[args.questionId] = args.snippets; else delete e[args.questionId]; return r(undefined); }
+    case "label_mark_set": { const l = labelSessions.find((x) => x.id === args.id)!; if (!args.mark.skipped && !args.mark.flagged && !args.mark.note) delete l.marks[args.rowIdx]; else l.marks[args.rowIdx] = args.mark; return r(undefined); }
+    case "label_position_set": { const l = labelSessions.find((x) => x.id === args.id); if (l) l.position = args.position; return r(undefined); }
+    case "label_session_update": { const l = labelSessions.find((x) => x.id === args.id)!; if (args.name) l.name = args.name; if (args.columns) l.columns = args.columns; if (args.questions) { l.questions = args.questions; l.titles = args.titles; } return r(undefined); }
+    case "label_session_set_saved": { const l = labelSessions.find((x) => x.id === args.id); if (l) l.saved_dataset_id = args.datasetId; return r(undefined); }
+    case "label_session_delete": { const i = labelSessions.findIndex((x) => x.id === args.id); if (i >= 0) labelSessions.splice(i, 1); return r(undefined); }
+    case "spreadsheet_inspect": {
+      await sleep(300);
+      const grid = [["Exported from CRM", "", "", "", ""], ["", "", "", "", ""], ["id", "message", "team", "amount", "date"], ...demoRows.slice(0, 17).map((d, i) => [String(i + 1), d.body, d.department.trim().replace(/\.$/, ""), (i * 7.5).toFixed(2), `2026-10-${String((i % 28) + 1).padStart(2, "0")}`])];
+      return r([{ name: "Tickets", rows: 162, width: 5, header_guess: 0, preview: grid }, { name: "Summary", rows: 3, width: 2, header_guess: 0, preview: [["metric", "value"], ["tickets", "160"], ["open", "12"]] }]);
+    }
+    case "spreadsheet_import": {
+      const all = ["id", "message", "team", "amount", "date"];
+      const cols = (args.columns.length ? args.columns : [0, 1, 2, 3, 4]).map((c: number) => all[c]);
+      const rows = demoRows.map((d, i) => Object.fromEntries(cols.map((c: string) => [c, c === "id" ? String(i + 1) : c === "message" ? d.body : c === "team" ? d.department : c === "amount" ? (i * 7.5).toFixed(2) : `2026-10-${String((i % 28) + 1).padStart(2, "0")}`])) as Row);
+      const d: Dataset = { id: `ds-${Date.now()}`, name: args.name || `tickets · ${args.sheet}`, source: `${args.path}#${args.sheet}`, columns: cols, row_count: rows.length, created_at: new Date().toISOString(), parent_id: null, parent_name: null, added_columns: [] };
+      datasets.unshift(d); rowsByDataset[d.id] = rows; return r(d);
+    }
+    case "files_import": {
+      await sleep(600);
+      const img = "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="300"><rect width="480" height="300" fill="#e8eefc"/><rect x="40" y="40" width="400" height="220" rx="12" fill="#fff" stroke="#9db4f0"/><text x="70" y="100" font-family="Helvetica" font-size="28" fill="#1d3b8a">RECEIPT</text><text x="70" y="150" font-family="Helvetica" font-size="18" fill="#555">Coffee x2 ........ 7.40</text><text x="70" y="180" font-family="Helvetica" font-size="18" fill="#555">Croissant ........ 3.20</text><text x="70" y="225" font-family="Helvetica" font-size="20" fill="#111">TOTAL 10.60 EUR</text></svg>');
+      const content: Record<string, string> = { docx: "# Quarterly report\n\nRevenue grew **12%** and costs were *flat*.\n\n- North\n- South", pdf: "Abstract\n\nWe study hyphenated words across lines in PDFs.", md: "# Notes\n\nCall the customer back on Monday." };
+      const rows: Row[] = args.paths.map((p: string, i: number) => {
+        const ext = p.split(".").pop()!.toLowerCase(); const name = p.split("/").pop()!;
+        const image = ["png", "jpg", "jpeg", "gif", "webp"].includes(ext);
+        return { name, kind: image ? "image" : ext === "md" || ext === "txt" ? "text" : ext, content: image ? "" : content[ext] ?? "", file: image ? img : "", source_path: p, _i: String(i) };
+      }).map(({ _i, ...row }: Row) => row);
+      const d: Dataset = { id: `ds-${Date.now()}`, name: args.name || `Files (${rows.length})`, source: `${rows.length} files`, columns: ["name", "kind", "content", "file", "source_path"], row_count: rows.length, created_at: new Date().toISOString(), parent_id: null, parent_name: null, added_columns: [] };
+      datasets.unshift(d); rowsByDataset[d.id] = rows; return r({ dataset: d, skipped: [] });
     }
     case "dataset_list": return r(datasets);
     case "dataset_get": return r(datasets.find((d) => d.id === args.id));
@@ -437,6 +660,12 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
       if (args.search) { const q = String(args.search).toLowerCase(); rows = rows.filter(([, row]) => Object.values(row).some((v) => v.toLowerCase().includes(q))); }
       if (args.sortColumn) rows = [...rows].sort((a, b) => (a[1][args.sortColumn] ?? "").localeCompare(b[1][args.sortColumn] ?? "", undefined, { numeric: true }) * (args.sortDesc ? -1 : 1));
       return r({ rows: rows.slice(args.offset, args.offset + args.limit), total: rows.length });
+    }
+    case "dataset_column_profile": {
+      const counts = new Map<string, number>(); let empty = 0; const rows = rowsByDataset[args.id] ?? [];
+      rows.forEach((row) => { const v = (row[args.column] ?? "").trim(); if (!v) empty++; else counts.set(v, (counts.get(v) ?? 0) + 1); });
+      const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+      return r({ rows: rows.length, empty, distinct: sorted.length, top: sorted.slice(0, args.limit ?? 300).map(([value, count]) => ({ value, count })) });
     }
     case "dataset_value_counts": {
       const counts = new Map<string, number>();

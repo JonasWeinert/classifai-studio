@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import { useRef, useState } from "react";
 import type { CalibrationBin } from "../lib/types";
 import { pct } from "../lib/format";
 
@@ -190,15 +191,65 @@ export function ThresholdChart({
     { key: "f1", color: "var(--good)", label: "F1" },
   ];
   const path = (k: "precision" | "recall" | "f1") => points.map((p, i) => `${i ? "L" : "M"}${x(p.threshold).toFixed(1)},${y(p[k]).toFixed(1)}`).join("");
-  const pick = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (!onPick) return;
+  // Drag the threshold line (or click/drag anywhere on the plot): the line follows the pointer
+  // continuously while `onPick` receives values snapped to 0.01, at most once per frame.
+  const [drag, setDrag] = useState<number | null>(null);
+  const frame = useRef(0);
+  const clamp = (t: number) => Math.min(0.99, Math.max(0.01, t));
+  const at = (e: React.PointerEvent<SVGSVGElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
-    const t = ((e.clientX - r.left) * (width / r.width) - padL) / iw;
-    onPick(Math.min(0.99, Math.max(0.01, Math.round(t * 100) / 100)));
+    return clamp(((e.clientX - r.left) * (width / r.width) - padL) / iw);
   };
+  const emit = (t: number) => {
+    cancelAnimationFrame(frame.current);
+    frame.current = requestAnimationFrame(() => onPick?.(Math.round(t * 100) / 100));
+  };
+  const down = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (!onPick || e.button !== 0) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const t = at(e);
+    setDrag(t);
+    emit(t);
+  };
+  const move = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (drag === null) return;
+    const t = at(e);
+    setDrag(t);
+    emit(t);
+  };
+  const up = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (drag === null) return;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    emit(drag);
+    setDrag(null);
+  };
+  const key = (e: React.KeyboardEvent<SVGSVGElement>) => {
+    if (!onPick || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    e.preventDefault();
+    const step = e.shiftKey ? 0.05 : 0.01;
+    onPick(Math.round(clamp(value + (e.key === "ArrowRight" ? step : -step)) * 100) / 100);
+  };
+  const shown = drag ?? value;
+  const lx = x(shown);
   return (
     <div>
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxWidth: width }} className={clsx("max-w-full overflow-visible", onPick && "cursor-crosshair")} onClick={pick}>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        style={{ maxWidth: width, touchAction: "none" }}
+        className={clsx("max-w-full overflow-visible outline-none select-none", onPick && (drag !== null ? "cursor-grabbing" : "cursor-ew-resize"))}
+        onPointerDown={down}
+        onPointerMove={move}
+        onPointerUp={up}
+        onPointerCancel={up}
+        onKeyDown={key}
+        tabIndex={onPick ? 0 : undefined}
+        role={onPick ? "slider" : undefined}
+        aria-label="Decision threshold"
+        aria-valuemin={0.01}
+        aria-valuemax={0.99}
+        aria-valuenow={value}
+      >
         <rect x={padL} y={padT} width={iw} height={ih} fill="var(--card)" rx={4} />
         {[0.25, 0.5, 0.75].map((t) => (
           <line key={t} x1={padL} x2={padL + iw} y1={y(t)} y2={y(t)} stroke="var(--border)" />
@@ -207,7 +258,18 @@ export function ThresholdChart({
           <path key={s.key} d={path(s.key)} fill="none" stroke={s.color} strokeWidth={2} strokeDasharray={s.dash} strokeLinejoin="round" />
         ))}
         <line x1={x(current)} x2={x(current)} y1={padT} y2={padT + ih} stroke="var(--faint)" strokeDasharray="2 3" />
-        <line x1={x(value)} x2={x(value)} y1={padT} y2={padT + ih} stroke="var(--foreground)" strokeWidth={1.5} />
+        <g style={{ transform: `translateX(${lx}px)`, transition: drag === null ? "transform 0.18s var(--ease-out)" : "none" }}>
+          <line x1={0} x2={0} y1={padT} y2={padT + ih} stroke="var(--foreground)" strokeWidth={drag !== null ? 2 : 1.5} />
+          {onPick && (
+            <>
+              <rect x={-14} y={padT - 13} width={28} height={15} rx={7.5} fill="var(--foreground)" />
+              <text x={0} y={padT - 2.5} fontSize={9.5} fill="var(--background)" textAnchor="middle" fontFamily="var(--font-mono, monospace)">
+                {shown.toFixed(2)}
+              </text>
+              <circle cx={0} cy={padT + ih / 2} r={drag !== null ? 6 : 5} fill="var(--background)" stroke="var(--foreground)" strokeWidth={1.5} />
+            </>
+          )}
+        </g>
         <text x={padL - 5} y={padT + 8} fontSize={10.5} fill="var(--faint)" textAnchor="end">1</text>
         <text x={padL - 5} y={padT + ih} fontSize={10.5} fill="var(--faint)" textAnchor="end">0</text>
         <text x={padL} y={height - 4} fontSize={10.5} fill="var(--faint)">0</text>

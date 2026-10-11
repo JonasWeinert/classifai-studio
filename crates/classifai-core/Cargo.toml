@@ -21,3 +21,11 @@ dirs = "6"
 # API keys of cloud providers live in the OS credential store (macOS Keychain, Windows Credential
 # Manager, Secret Service on Linux).
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+quick-xml = "0.37"
+pdf-extract = "0.9"
+calamine = { version = "0.30", features = ["dates"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+lopdf = "0.36"
+rust_xlsxwriter = "0.90"

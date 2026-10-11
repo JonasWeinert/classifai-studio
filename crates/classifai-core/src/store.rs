@@ -1,7 +1,11 @@
 //! SQLite persistence. One file (`classifai.db`) holds datasets, their rows, experiments, every
 //! prediction, cloud providers with their models and prices, a usage log, label corrections,
-//! saved question sets and app settings, so the app and the CLI see the same data. API keys are not
-//! stored here (see [`crate::secrets`]).
+//! saved question sets, app settings and the app's UI state, so the app and the CLI see the same
+//! data. API keys are not stored here (see [`crate::secrets`]).
+//!
+//! A dataset can be *derived* from another (results saved as a dataset): its rows link to the
+//! parent's rows and store only the cells it adds. Reads go through the `resolved_rows` view,
+//! which merges the two, so derived datasets behave like any other.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -28,12 +32,29 @@ pub struct Dataset {
     pub columns: Vec<String>,
     pub row_count: usize,
     pub created_at: String,
+    /// The dataset this one's rows link to; None for imported data.
+    pub parent_id: Option<String>,
+    pub parent_name: Option<String>,
+    /// Columns this dataset stores itself on top of its parent's (empty without a parent).
+    pub added_columns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ValueCount {
     pub value: String,
     pub count: usize,
+}
+
+/// How a column's values are spread: enough to tell labels from free text.
+#[derive(Debug, Clone, Serialize)]
+pub struct ColumnProfile {
+    pub rows: usize,
+    /// Rows where the column is empty.
+    pub empty: usize,
+    /// Distinct non-empty values.
+    pub distinct: usize,
+    /// The most frequent non-empty values.
+    pub top: Vec<ValueCount>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -188,6 +209,9 @@ pub struct QuestionSetInput {
     #[serde(default)]
     pub description: Option<String>,
     pub payload: Value,
+    /// Overwrite the latest version instead of adding one (autosave while drafting).
+    #[serde(default)]
+    pub amend: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -243,7 +267,7 @@ CREATE TABLE IF NOT EXISTS experiments (
 "#;
 
 /// Bumped whenever the schema changes; see [`migrate`].
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 9;
 
 /// One row per (experiment, model, row, question).
 const PREDICTIONS_TABLE: &str = r#"
@@ -336,12 +360,118 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE INDEX IF NOT EXISTS predictions_model ON predictions (model);
 "#;
 
+/// v5: derived datasets (rows that link to a parent row and store only added cells) and the UI
+/// state the app used to keep in browser storage.
+const V5_TABLES: &str = r#"
+ALTER TABLE datasets ADD COLUMN parent_id TEXT;
+ALTER TABLE datasets ADD COLUMN added_columns TEXT;
+ALTER TABLE dataset_rows ADD COLUMN parent_idx INTEGER;
+CREATE INDEX IF NOT EXISTS datasets_parent ON datasets (parent_id);
+CREATE TABLE IF NOT EXISTS ui_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE VIEW IF NOT EXISTS resolved_rows AS
+SELECT r.dataset_id AS dataset_id, r.idx AS idx,
+       CASE WHEN r.parent_idx IS NULL THEN r.data ELSE json_patch(COALESCE(p.data, '{}'), r.data) END AS data
+FROM dataset_rows r
+JOIN datasets d ON d.id = r.dataset_id
+LEFT JOIN dataset_rows p ON p.dataset_id = d.parent_id AND p.idx = r.parent_idx;
+"#;
+
+/// v6: Bulk runs (one model, many entries, no ground truth) and their answers. Runs over a dataset
+/// store row indices only; their inputs are read from the dataset.
+const V6_TABLES: &str = r#"
+CREATE TABLE IF NOT EXISTS bulk_runs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    model TEXT NOT NULL,
+    source TEXT NOT NULL,
+    dataset_id TEXT,
+    dataset_name TEXT,
+    columns TEXT NOT NULL,
+    titles TEXT NOT NULL,
+    setup TEXT NOT NULL,
+    status TEXT NOT NULL,
+    saved_dataset_id TEXT,
+    created_at TEXT NOT NULL,
+    finished_at TEXT
+);
+CREATE TABLE IF NOT EXISTS bulk_results (
+    run_id TEXT NOT NULL REFERENCES bulk_runs(id) ON DELETE CASCADE,
+    pos INTEGER NOT NULL,
+    row_idx INTEGER NOT NULL,
+    input TEXT,
+    answers TEXT,
+    error TEXT,
+    latency_ms REAL,
+    cost_usd REAL,
+    PRIMARY KEY (run_id, pos)
+);
+"#;
+
+/// v7: manual labelling sessions, their answers and per-entry marks (skipped, flagged, notes).
+const V7_TABLES: &str = r#"
+CREATE TABLE IF NOT EXISTS label_sessions (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    dataset_id TEXT NOT NULL,
+    dataset_name TEXT NOT NULL,
+    columns TEXT NOT NULL,
+    question_set_id TEXT,
+    question_set_version INTEGER,
+    questions TEXT NOT NULL,
+    titles TEXT NOT NULL,
+    row_order TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    saved_dataset_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS label_answers (
+    session_id TEXT NOT NULL REFERENCES label_sessions(id) ON DELETE CASCADE,
+    row_idx INTEGER NOT NULL,
+    question_id TEXT NOT NULL,
+    value TEXT NOT NULL,
+    at TEXT NOT NULL,
+    PRIMARY KEY (session_id, row_idx, question_id)
+);
+CREATE TABLE IF NOT EXISTS label_marks (
+    session_id TEXT NOT NULL REFERENCES label_sessions(id) ON DELETE CASCADE,
+    row_idx INTEGER NOT NULL,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    flagged INTEGER NOT NULL DEFAULT 0,
+    note TEXT,
+    PRIMARY KEY (session_id, row_idx)
+);
+"#;
+
+/// v8: latency lookups per model (median in SQL for time estimates).
+const V8_TABLES: &str = "CREATE INDEX IF NOT EXISTS predictions_model_latency ON predictions (model, latency_ms);";
+
+/// v9: passages of an entry that a person marked as the reason for an answer (manual labelling).
+const V9_TABLES: &str = r#"
+CREATE TABLE IF NOT EXISTS label_evidence (
+    session_id TEXT NOT NULL REFERENCES label_sessions(id) ON DELETE CASCADE,
+    row_idx INTEGER NOT NULL,
+    question_id TEXT NOT NULL,
+    snippets TEXT NOT NULL,
+    PRIMARY KEY (session_id, row_idx, question_id)
+);
+"#;
+
 /// Bring the schema to [`SCHEMA_VERSION`]. Idempotent.
 ///
 /// v0/v1 → v2: predictions gain `question_id`; existing rows answered the single question of
 /// that time, so they get [`LEGACY_TASK_ID`].
 /// v2 → v3: [`CLOUD_TABLES`].
 /// v3 → v4: [`V4_TABLES`].
+/// v4 → v5: [`V5_TABLES`].
+/// v5 → v6: [`V6_TABLES`].
+/// v6 → v7: [`V7_TABLES`].
+/// v7 → v8: [`V8_TABLES`].
+/// v8 → v9: [`V9_TABLES`].
 fn migrate(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -357,6 +487,21 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     }
     if version < 4 {
         tx.execute_batch(V4_TABLES)?;
+    }
+    if version < 5 {
+        tx.execute_batch(V5_TABLES)?;
+    }
+    if version < 6 {
+        tx.execute_batch(V6_TABLES)?;
+    }
+    if version < 7 {
+        tx.execute_batch(V7_TABLES)?;
+    }
+    if version < 8 {
+        tx.execute_batch(V8_TABLES)?;
+    }
+    if version < 9 {
+        tx.execute_batch(V9_TABLES)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -411,17 +556,18 @@ impl Store {
         Ok(store)
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Experiments that were running when the app quit are marked cancelled.
+    /// Experiments and Bulk runs that were running when the app quit are marked cancelled.
     fn recover_interrupted(&self) -> Result<()> {
         self.conn().execute(
             "UPDATE experiments SET status = 'cancelled', error = 'Interrupted: the app was closed while running'
              WHERE status IN ('running', 'pending')",
             [],
         )?;
+        self.conn().execute("UPDATE bulk_runs SET status = 'cancelled' WHERE status IN ('running', 'pending')", [])?;
         Ok(())
     }
 
@@ -450,11 +596,19 @@ impl Store {
             columns: data.columns.clone(),
             row_count: data.rows.len(),
             created_at,
+            parent_id: None,
+            parent_name: None,
+            added_columns: Vec::new(),
         })
     }
 
+    const DATASET_SELECT: &'static str =
+        "SELECT d.id, d.name, d.source, d.columns, d.row_count, d.created_at, d.parent_id, p.name, d.added_columns
+         FROM datasets d LEFT JOIN datasets p ON p.id = d.parent_id";
+
     fn map_dataset(r: &rusqlite::Row) -> rusqlite::Result<Dataset> {
         let cols: String = r.get(3)?;
+        let added: Option<String> = r.get(8)?;
         Ok(Dataset {
             id: r.get(0)?,
             name: r.get(1)?,
@@ -462,25 +616,22 @@ impl Store {
             columns: serde_json::from_str(&cols).unwrap_or_default(),
             row_count: r.get::<_, i64>(4)? as usize,
             created_at: r.get(5)?,
+            parent_id: r.get(6)?,
+            parent_name: r.get(7)?,
+            added_columns: added.and_then(|a| serde_json::from_str(&a).ok()).unwrap_or_default(),
         })
     }
 
     pub fn list_datasets(&self) -> Result<Vec<Dataset>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, source, columns, row_count, created_at FROM datasets ORDER BY created_at DESC",
-        )?;
+        let mut stmt = conn.prepare(&format!("{} ORDER BY d.created_at DESC", Self::DATASET_SELECT))?;
         let rows = stmt.query_map([], Self::map_dataset)?.collect::<rusqlite::Result<_>>()?;
         Ok(rows)
     }
 
     pub fn get_dataset(&self, id: &str) -> Result<Dataset> {
         self.conn()
-            .query_row(
-                "SELECT id, name, source, columns, row_count, created_at FROM datasets WHERE id = ?1",
-                [id],
-                Self::map_dataset,
-            )
+            .query_row(&format!("{} WHERE d.id = ?1", Self::DATASET_SELECT), [id], Self::map_dataset)
             .optional()?
             .ok_or_else(|| Error::NotFound(format!("dataset {id}")))
     }
@@ -490,15 +641,172 @@ impl Store {
         Ok(())
     }
 
+    /// Deletes a dataset with its experiments. Datasets derived from it keep their rows: the linked
+    /// cells are copied into them first.
     pub fn delete_dataset(&self, id: &str) -> Result<()> {
-        self.conn().execute("DELETE FROM datasets WHERE id = ?1", [id])?;
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE dataset_rows SET
+                data = (SELECT rr.data FROM resolved_rows rr WHERE rr.dataset_id = dataset_rows.dataset_id AND rr.idx = dataset_rows.idx),
+                parent_idx = NULL
+             WHERE dataset_id IN (SELECT id FROM datasets WHERE parent_id = ?1)",
+            [id],
+        )?;
+        tx.execute("UPDATE datasets SET parent_id = NULL, added_columns = NULL WHERE parent_id = ?1", [id])?;
+        tx.execute("DELETE FROM datasets WHERE id = ?1", [id])?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// Names of the datasets derived from this one.
+    pub fn derived_datasets(&self, id: &str) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT name FROM datasets WHERE parent_id = ?1 ORDER BY created_at")?;
+        let out = stmt.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(out)
+    }
+
+    /// A dataset whose rows link to rows of `parent_id` and store only the given cells: `rows` are
+    /// `(parent row index, added cells)`, in the new dataset's order. Added columns that clash with
+    /// the parent's get a numeric suffix. Deriving from a derived dataset links to its root and
+    /// carries the parent's added cells over, so links are never more than one level deep. Label
+    /// corrections of the linked rows are copied.
+    pub fn insert_derived_dataset(
+        &self,
+        parent_id: &str,
+        name: &str,
+        source: Option<&str>,
+        rows: &[(usize, Row)],
+    ) -> Result<Dataset> {
+        let parent = self.get_dataset(parent_id)?;
+        if rows.is_empty() {
+            return Err(Error::invalid("nothing to save: no rows"));
+        }
+        // Column names as given -> unique names next to the parent's columns.
+        let mut columns = parent.columns.clone();
+        let mut added = parent.added_columns.clone();
+        let mut rename: IndexMap<String, String> = IndexMap::new();
+        for (_, cells) in rows {
+            for key in cells.keys() {
+                if rename.contains_key(key) {
+                    continue;
+                }
+                let unique = unique_name(key, &columns);
+                columns.push(unique.clone());
+                added.push(unique.clone());
+                rename.insert(key.clone(), unique);
+            }
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let created_at = now_rfc3339();
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        // (root id, root row index, carried-over cells) for each requested parent row.
+        let root_id = parent.parent_id.clone().unwrap_or_else(|| parent.id.clone());
+        let mut links = Vec::with_capacity(rows.len());
+        {
+            let mut stmt = tx.prepare("SELECT parent_idx, data FROM dataset_rows WHERE dataset_id = ?1 AND idx = ?2")?;
+            for (pidx, _) in rows {
+                let (link, data): (Option<i64>, String) = stmt
+                    .query_row(params![parent.id, *pidx as i64], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .optional()?
+                    .ok_or_else(|| Error::NotFound(format!("row {} of dataset {}", pidx + 1, parent.name)))?;
+                links.push(match (&parent.parent_id, link) {
+                    (Some(_), Some(root_idx)) => (root_idx as usize, serde_json::from_str::<Row>(&data)?),
+                    _ => (*pidx, Row::new()),
+                });
+            }
+        }
+        tx.execute(
+            "INSERT INTO datasets (id, name, source, columns, row_count, created_at, parent_id, added_columns)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id,
+                name,
+                source,
+                serde_json::to_string(&columns)?,
+                rows.len(),
+                created_at,
+                root_id,
+                serde_json::to_string(&added)?
+            ],
+        )?;
+        {
+            let mut insert =
+                tx.prepare("INSERT INTO dataset_rows (dataset_id, idx, data, parent_idx) VALUES (?1, ?2, ?3, ?4)")?;
+            let mut copy = tx.prepare(
+                "INSERT INTO label_corrections (dataset_id, row_idx, column_name, original, value, note, at)
+                 SELECT ?1, ?2, column_name, original, value, note, at FROM label_corrections
+                 WHERE dataset_id = ?3 AND row_idx = ?4",
+            )?;
+            for (i, ((pidx, cells), (root_idx, mut data))) in rows.iter().zip(links).enumerate() {
+                for (k, v) in cells {
+                    data.insert(rename[k].clone(), v.clone());
+                }
+                insert.execute(params![id, i as i64, serde_json::to_string(&data)?, root_idx as i64])?;
+                copy.execute(params![id, i as i64, parent.id, *pidx as i64])?;
+            }
+        }
+        tx.commit()?;
+        Ok(Dataset {
+            id,
+            name: name.into(),
+            source: source.map(Into::into),
+            columns,
+            row_count: rows.len(),
+            created_at,
+            parent_name: Some(if parent.parent_id.is_some() { parent.parent_name.unwrap_or_default() } else { parent.name }),
+            parent_id: Some(root_id),
+            added_columns: added,
+        })
+    }
+
+    /// Save an experiment's predictions as a dataset derived from its dataset: the evaluated rows,
+    /// plus a prediction and a confidence column per question (and per model when there are
+    /// several).
+    pub fn save_experiment_as_dataset(&self, experiment_id: &str, name: &str) -> Result<Dataset> {
+        let e = self.get_experiment(experiment_id)?;
+        let preds = self.predictions(experiment_id)?;
+        let mut questions: Vec<String> = e.config.tasks.iter().map(|t| t.id.clone()).collect();
+        for p in &preds {
+            if !questions.contains(&p.question_id) {
+                questions.push(p.question_id.clone());
+            }
+        }
+        let models: Vec<String> = e.config.models.clone();
+        let column = |q: &str, m: &str| {
+            if models.len() > 1 { format!("{q} · {}", short_model(m)) } else { q.to_string() }
+        };
+        let by_key: HashMap<(usize, &str, &str), &Prediction> =
+            preds.iter().map(|p| ((p.row_idx, p.model.as_str(), p.question_id.as_str()), p)).collect();
+        let rows: Vec<(usize, Row)> = e
+            .row_indices
+            .iter()
+            .map(|&idx| {
+                let mut cells = Row::new();
+                for q in &questions {
+                    for m in &models {
+                        let p = by_key.get(&(idx, m.as_str(), q.as_str()));
+                        let col = column(q, m);
+                        cells.insert(col.clone(), p.and_then(|p| p.predicted.clone()).unwrap_or_default());
+                        cells.insert(
+                            format!("{col} confidence"),
+                            p.and_then(|p| p.confidence).map(|c| format!("{c:.3}")).unwrap_or_default(),
+                        );
+                    }
+                }
+                (idx, cells)
+            })
+            .collect();
+        self.insert_derived_dataset(&e.dataset_id, name, Some(&format!("Evaluation: {}", e.name)), &rows)
     }
 
     pub fn dataset_rows(&self, id: &str, offset: usize, limit: usize) -> Result<Vec<(usize, Row)>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT idx, data FROM dataset_rows WHERE dataset_id = ?1 ORDER BY idx LIMIT ?2 OFFSET ?3",
+            "SELECT idx, data FROM resolved_rows WHERE dataset_id = ?1 ORDER BY idx LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt
             .query_map(params![id, limit as i64, offset as i64], |r| {
@@ -512,7 +820,7 @@ impl Store {
 
     pub fn dataset_rows_by_index(&self, id: &str, indices: &[usize]) -> Result<Vec<(usize, Row)>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT data FROM dataset_rows WHERE dataset_id = ?1 AND idx = ?2")?;
+        let mut stmt = conn.prepare("SELECT data FROM resolved_rows WHERE dataset_id = ?1 AND idx = ?2")?;
         indices
             .iter()
             .map(|&i| {
@@ -522,18 +830,82 @@ impl Store {
             .collect()
     }
 
-    /// Distinct values of one column, most frequent first (trimmed). Capped at `limit` values.
+    /// Distinct values of one column (trimmed, most frequent first, capped at `limit`) and how many
+    /// distinct values there are in all. SQL reads only that column; counting happens here, which
+    /// is several times faster than SQLite's GROUP BY on a JSON expression (≈70 ms vs ≈780 ms for
+    /// 100k rows).
+    pub fn column_profile(&self, id: &str, column: &str, limit: usize) -> Result<ColumnProfile> {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut total = 0usize;
+        {
+            let conn = self.conn();
+            let mut stmt = conn.prepare(
+                "SELECT TRIM(CAST(COALESCE(json_extract(data, '$.' || json_quote(?2)), '') AS TEXT)) FROM resolved_rows WHERE dataset_id = ?1",
+            )?;
+            let mut rows = stmt.query(params![id, column])?;
+            while let Some(r) = rows.next()? {
+                let v: String = r.get(0)?;
+                total += 1;
+                *counts.entry(v).or_default() += 1;
+            }
+        }
+        let empty = counts.remove("").unwrap_or(0);
+        let distinct = counts.len();
+        let mut all: Vec<(String, usize)> = counts.into_iter().collect();
+        // Most frequent first, ties by value: only the top `limit` need ordering.
+        let cmp = |a: &(String, usize), b: &(String, usize)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0));
+        if all.len() > limit && limit > 0 {
+            all.select_nth_unstable_by(limit - 1, cmp);
+            all.truncate(limit);
+        } else if limit == 0 {
+            all.clear();
+        }
+        all.sort_by(cmp);
+        Ok(ColumnProfile { rows: total, empty, distinct, top: all.into_iter().map(|(value, count)| ValueCount { value, count }).collect() })
+    }
+
+    /// Only some columns of every row (corrections applied): what planning an experiment needs,
+    /// without reading and parsing whole rows.
+    pub fn column_cells(&self, dataset_id: &str, columns: &[String]) -> Result<Vec<(usize, Row)>> {
+        if columns.is_empty() {
+            return Ok(Vec::new());
+        }
+        let select: Vec<String> = (0..columns.len())
+            .map(|i| format!("CAST(COALESCE(json_extract(data, '$.' || json_quote(?{})), '') AS TEXT)", i + 2))
+            .collect();
+        let mut rows: Vec<(usize, Row)> = {
+            let conn = self.conn();
+            let mut stmt = conn.prepare(&format!(
+                "SELECT idx, {} FROM resolved_rows WHERE dataset_id = ?1 ORDER BY idx",
+                select.join(", ")
+            ))?;
+            let mut args: Vec<&dyn rusqlite::ToSql> = vec![&dataset_id];
+            args.extend(columns.iter().map(|c| c as &dyn rusqlite::ToSql));
+            let out = stmt
+                .query_map(args.as_slice(), |r| {
+                    let mut row = Row::new();
+                    for (i, c) in columns.iter().enumerate() {
+                        row.insert(c.clone(), r.get(i + 1)?);
+                    }
+                    Ok((r.get::<_, i64>(0)? as usize, row))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            out
+        };
+        apply_corrections(&mut rows, &self.corrections_map(dataset_id)?);
+        Ok(rows)
+    }
+
+    /// Distinct values of one column, most frequent first (trimmed; the empty value included).
+    /// Capped at `limit` values.
     pub fn value_counts(&self, id: &str, column: &str, limit: usize) -> Result<Vec<ValueCount>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT TRIM(COALESCE(json_extract(data, '$.' || json_quote(?2)), '')) AS v, COUNT(*) AS n
-             FROM dataset_rows WHERE dataset_id = ?1 GROUP BY v ORDER BY n DESC, v LIMIT ?3",
-        )?;
-        let out = stmt
-            .query_map(params![id, column, limit as i64], |r| {
-                Ok(ValueCount { value: r.get(0)?, count: r.get::<_, i64>(1)? as usize })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+        let p = self.column_profile(id, column, limit)?;
+        let mut out = p.top;
+        if p.empty > 0 {
+            let at = out.iter().position(|v| v.count < p.empty || (v.count == p.empty && v.value.as_str() > "")).unwrap_or(out.len());
+            out.insert(at, ValueCount { value: String::new(), count: p.empty });
+            out.truncate(limit);
+        }
         Ok(out)
     }
 
@@ -959,6 +1331,24 @@ fn slug_or(name: &str, fallback: &str) -> String {
     }
 }
 
+/// `name`, or `name 2`, `name 3`… when it is taken.
+fn unique_name(name: &str, taken: &[String]) -> String {
+    let name = if name.trim().is_empty() { "column" } else { name };
+    if !taken.iter().any(|t| t == name) {
+        return name.to_string();
+    }
+    (2..).map(|n| format!("{name} {n}")).find(|c| !taken.contains(c)).unwrap()
+}
+
+/// `laya:latest` -> `laya`, `@openai/gpt-6-luna` -> `gpt-6-luna` (as the app shows models).
+fn short_model(m: &str) -> &str {
+    let m = m.strip_suffix(":latest").unwrap_or(m);
+    match m.strip_prefix('@') {
+        Some(rest) => rest.split_once('/').map_or(rest, |(_, model)| model),
+        None => m,
+    }
+}
+
 fn question_count(payload: &Value) -> usize {
     payload.get("questions").and_then(Value::as_array).map_or(0, Vec::len)
 }
@@ -1000,16 +1390,16 @@ impl Store {
 
         let pattern = search.map(like_pattern);
         const FILTER: &str = "dataset_id = ?1 AND (?2 IS NULL OR EXISTS
-            (SELECT 1 FROM json_each(dataset_rows.data) WHERE CAST(value AS TEXT) LIKE ?2 ESCAPE '\\'))";
+            (SELECT 1 FROM json_each(resolved_rows.data) WHERE CAST(value AS TEXT) LIKE ?2 ESCAPE '\\'))";
         let Some(col) = sort_column else {
             let conn = self.conn();
             let total: i64 = conn.query_row(
-                &format!("SELECT COUNT(*) FROM dataset_rows WHERE {FILTER}"),
+                &format!("SELECT COUNT(*) FROM resolved_rows WHERE {FILTER}"),
                 params![id, pattern],
                 |r| r.get(0),
             )?;
             let mut stmt = conn.prepare(&format!(
-                "SELECT idx, data FROM dataset_rows WHERE {FILTER} ORDER BY idx LIMIT ?3 OFFSET ?4"
+                "SELECT idx, data FROM resolved_rows WHERE {FILTER} ORDER BY idx LIMIT ?3 OFFSET ?4"
             ))?;
             let raw = stmt
                 .query_map(params![id, pattern, limit as i64, offset as i64], |r| {
@@ -1023,7 +1413,7 @@ impl Store {
             let conn = self.conn();
             let mut stmt = conn.prepare(&format!(
                 "SELECT idx, CAST(COALESCE(json_extract(data, '$.' || json_quote(?3)), '') AS TEXT)
-                 FROM dataset_rows WHERE {FILTER}"
+                 FROM resolved_rows WHERE {FILTER}"
             ))?;
             let keys = stmt
                 .query_map(params![id, pattern, col], |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, String>(1)?)))?
@@ -1147,6 +1537,25 @@ impl Store {
     }
 
     /// Latencies (ms) of every answered prediction of a model, across experiments.
+    /// Median latency (ms) and how many answered predictions it is based on, computed in SQL.
+    pub fn model_latency_median(&self, model: &str) -> Result<(Option<f64>, usize)> {
+        let conn = self.conn();
+        const WHERE: &str = "model = ?1 AND latency_ms IS NOT NULL AND error IS NULL";
+        let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM predictions WHERE {WHERE}"), [model], |r| r.get(0))?;
+        if n == 0 {
+            return Ok((None, 0));
+        }
+        let at = |k: i64| -> rusqlite::Result<f64> {
+            conn.query_row(
+                &format!("SELECT latency_ms FROM predictions WHERE {WHERE} ORDER BY latency_ms LIMIT 1 OFFSET ?2"),
+                params![model, k],
+                |r| r.get(0),
+            )
+        };
+        let median = if n % 2 == 1 { at(n / 2)? } else { (at(n / 2 - 1)? + at(n / 2)?) / 2.0 };
+        Ok((Some(median), n as usize))
+    }
+
     pub fn model_latencies(&self, model: &str) -> Result<Vec<f64>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -1242,7 +1651,12 @@ impl Store {
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )?;
                 let old: Value = serde_json::from_str(&latest.1).unwrap_or(Value::Null);
-                if old != input.payload {
+                if old != input.payload && input.amend {
+                    tx.execute(
+                        "UPDATE question_set_versions SET payload = ?3, created_at = ?4 WHERE set_id = ?1 AND version = ?2",
+                        params![id, latest.0, payload, now],
+                    )?;
+                } else if old != input.payload {
                     tx.execute(
                         "INSERT INTO question_set_versions (set_id, version, payload, created_at) VALUES (?1, ?2, ?3, ?4)",
                         params![id, latest.0 + 1, payload, now],
@@ -1322,6 +1736,32 @@ impl Store {
         self.settings()
     }
 
+    // ---- UI state ------------------------------------------------------------------------
+
+    /// Everything the app keeps between launches (drafts, last page, theme…), by key. Values are
+    /// owned by the frontend and stored as given.
+    pub fn ui_state(&self) -> Result<IndexMap<String, Value>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT key, value FROM ui_state ORDER BY key")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.into_iter().filter_map(|(k, v)| Some((k, serde_json::from_str(&v).ok()?))).collect())
+    }
+
+    /// Store one UI state value; `None` (or JSON null) removes it.
+    pub fn set_ui_state(&self, key: &str, value: Option<&Value>) -> Result<()> {
+        match value.filter(|v| !v.is_null()) {
+            Some(v) => self.conn().execute(
+                "INSERT INTO ui_state (key, value, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                params![key, serde_json::to_string(v)?, now_rfc3339()],
+            )?,
+            None => self.conn().execute("DELETE FROM ui_state WHERE key = ?1", [key])?,
+        };
+        Ok(())
+    }
+
     /// Cost logged since an RFC 3339 time.
     pub fn spend_since(&self, since: &str) -> Result<f64> {
         Ok(self.conn().query_row("SELECT COALESCE(SUM(cost_usd), 0.0) FROM usage_log WHERE at >= ?1", [since], |r| {
@@ -1377,6 +1817,119 @@ mod tests {
         assert_eq!(vc[1].value, "neg");
         let rows = s.dataset_rows_by_index(&d.id, &[2]).unwrap();
         assert_eq!(rows[0].1["text"], "c");
+    }
+
+    fn row(cells: &[(&str, &str)]) -> Row {
+        cells.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn derived_datasets_link_rows_and_store_only_added_cells() {
+        let s = Store::open_in_memory().unwrap();
+        let data = parse_delimited("text,label\na,pos\nb,neg\nc,pos\n", b',').unwrap();
+        let base = s.insert_dataset("base", None, &data).unwrap();
+        s.set_label_correction(&base.id, 2, "label", "neg", None).unwrap();
+
+        // rows 2 and 0 of the base, with a prediction each; "label" clashes and is renamed
+        let d = s
+            .insert_derived_dataset(
+                &base.id,
+                "run 1",
+                None,
+                &[(2, row(&[("pred", "x"), ("label", "p")])), (0, row(&[("pred", "y"), ("label", "q")]))],
+            )
+            .unwrap();
+        assert_eq!(d.columns, ["text", "label", "pred", "label 2"]);
+        assert_eq!(d.added_columns, ["pred", "label 2"]);
+        assert_eq!(d.parent_name.as_deref(), Some("base"));
+        assert_eq!(s.get_dataset(&d.id).unwrap().parent_id.as_deref(), Some(base.id.as_str()));
+        let rows = s.dataset_rows(&d.id, 0, 10).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1["text"], "c");
+        assert_eq!(rows[0].1["pred"], "x");
+        assert_eq!(rows[1].1["text"], "a");
+        assert_eq!(rows[1].1["label 2"], "q");
+        // only the added cells are stored
+        let raw: String = s
+            .conn()
+            .query_row("SELECT data FROM dataset_rows WHERE dataset_id = ?1 AND idx = 0", [&d.id], |r| r.get(0))
+            .unwrap();
+        assert!(!raw.contains("text"), "{raw}");
+        // search, sort and value counts see linked cells
+        assert_eq!(s.dataset_rows_page(&d.id, 0, 10, Some("c"), None, false).unwrap().1, 1);
+        assert_eq!(s.value_counts(&d.id, "text", 10).unwrap().len(), 2);
+        // the base's correction of row 2 is now the derived dataset's row 0
+        assert_eq!(s.corrected_rows(&d.id, Some(&[0])).unwrap()[0].1["label"], "neg");
+
+        // deriving from a derived dataset links to the root and carries cells over
+        let d2 = s.insert_derived_dataset(&d.id, "run 2", None, &[(1, row(&[("score", "3")]))]).unwrap();
+        assert_eq!(d2.parent_id.as_deref(), Some(base.id.as_str()));
+        let r = &s.dataset_rows(&d2.id, 0, 10).unwrap()[0].1;
+        assert_eq!((r["text"].as_str(), r["pred"].as_str(), r["score"].as_str()), ("a", "y", "3"));
+        assert_eq!(s.derived_datasets(&base.id).unwrap(), ["run 1", "run 2"]);
+
+        // deleting the base keeps derived rows whole
+        s.delete_dataset(&base.id).unwrap();
+        let d = s.get_dataset(&d.id).unwrap();
+        assert!(d.parent_id.is_none() && d.added_columns.is_empty());
+        let rows = s.dataset_rows(&d.id, 0, 10).unwrap();
+        assert_eq!((rows[0].1["text"].as_str(), rows[0].1["pred"].as_str()), ("c", "x"));
+        assert_eq!(s.dataset_rows(&d2.id, 0, 10).unwrap()[0].1["text"], "a");
+    }
+
+    #[test]
+    fn column_profiles_and_cells_come_from_sql() {
+        let s = Store::open_in_memory().unwrap();
+        let csv = "text,label\nlong a,pos\nlong b, neg\nlong c,pos\nlong d,\nlong e,x\n";
+        let d = s.insert_dataset("demo", None, &parse_delimited(csv, b',').unwrap()).unwrap();
+        let p = s.column_profile(&d.id, "label", 2).unwrap();
+        assert_eq!((p.rows, p.empty, p.distinct), (5, 1, 3));
+        assert_eq!(p.top.iter().map(|v| (v.value.as_str(), v.count)).collect::<Vec<_>>(), [("pos", 2), ("neg", 1)]);
+
+        s.set_label_correction(&d.id, 4, "label", "neg", None).unwrap();
+        let cells = s.column_cells(&d.id, &["label".into()]).unwrap();
+        assert_eq!(cells.len(), 5);
+        assert_eq!(cells[0].1.len(), 1, "only the asked column");
+        assert_eq!(cells[4].1["label"], "neg", "corrections applied");
+    }
+
+    #[test]
+    fn latency_median_in_sql() {
+        let s = Store::open_in_memory().unwrap();
+        assert_eq!(s.model_latency_median("m").unwrap(), (None, 0));
+        let d = s.insert_dataset("d", None, &parse_delimited("t,l\na,x\n", b',').unwrap()).unwrap();
+        let config: ExperimentConfig = serde_json::from_value(serde_json::json!({
+            "name": "e", "dataset_id": d.id, "input_columns": ["t"],
+            "tasks": [{ "id": "l", "kind": "choice", "instructions": "?", "label_column": "l", "labels": [{ "value": "x" }, { "value": "y" }] }],
+            "models": ["m"]
+        }))
+        .unwrap();
+        let e = s.create_experiment(&config, &[0]).unwrap();
+        for (i, ms) in [40.0, 10.0, 30.0, 20.0].into_iter().enumerate() {
+            let p = Prediction { model: "m".into(), row_idx: i, question_id: format!("q{i}"), ground_truth: "x".into(), predicted: Some("x".into()), confidence: None, top_prob: None, probabilities: None, latency_ms: Some(ms), error: None };
+            s.insert_prediction(&e, &p).unwrap();
+        }
+        assert_eq!(s.model_latency_median("m").unwrap(), (Some(25.0), 4));
+    }
+
+    #[test]
+    fn ui_state_roundtrip() {
+        let s = Store::open_in_memory().unwrap();
+        s.set_ui_state("theme", Some(&serde_json::json!("dark"))).unwrap();
+        s.set_ui_state("draft", Some(&serde_json::json!({ "qs": [1, 2] }))).unwrap();
+        s.set_ui_state("theme", Some(&serde_json::json!("light"))).unwrap();
+        let all = s.ui_state().unwrap();
+        assert_eq!(all["theme"], "light");
+        assert_eq!(all["draft"]["qs"][1], 2);
+        s.set_ui_state("draft", None).unwrap();
+        assert!(!s.ui_state().unwrap().contains_key("draft"));
+    }
+
+    #[test]
+    fn short_model_names() {
+        assert_eq!(short_model("laya:latest"), "laya");
+        assert_eq!(short_model("@openai/gpt-6-luna"), "gpt-6-luna");
+        assert_eq!(short_model("decider:0.8b"), "decider:0.8b");
     }
 
     #[test]
@@ -1451,7 +2004,7 @@ mod tests {
         assert!(s.list_providers().unwrap().is_empty());
         s.seed_builtin_providers().unwrap();
         let ids: Vec<String> = s.list_providers().unwrap().into_iter().map(|p| p.id).collect();
-        assert_eq!(ids, vec!["typesafe", "openai", "cloudflare"]);
+        assert_eq!(ids, vec!["typesafe", "openai", "cloudflare", "anthropic", "openai-chat"]);
         assert_eq!(s.list_cloud_models(Some("cloudflare")).unwrap().len(), 2);
         assert!(s.usage_summary(None).unwrap().is_empty());
     }
@@ -1472,8 +2025,8 @@ mod tests {
         assert_eq!(again.input_price_per_mtok, 0.05);
         assert!(!again.enabled);
         assert!(s.get_cloud_model("cloudflare", "clef").unwrap().is_some(), "missing built-ins come back");
-        assert_eq!(s.list_providers().unwrap().len(), 3);
-        assert_eq!(s.list_cloud_models(None).unwrap().len(), 4);
+        assert_eq!(s.list_providers().unwrap().len(), 5);
+        assert_eq!(s.list_cloud_models(None).unwrap().len(), 5);
     }
 
     #[test]
@@ -1535,7 +2088,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_v3_to_v4() {
+    fn migrates_v3_to_latest() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute_batch(PREDICTIONS_TABLE).unwrap();
@@ -1551,7 +2104,7 @@ mod tests {
         migrate(&mut conn).unwrap();
         migrate(&mut conn).unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, SCHEMA_VERSION);
         let s = Store { conn: Mutex::new(conn) };
         assert_eq!(s.usage_summary(None).unwrap().len(), 1, "existing data is kept");
         assert!(s.label_corrections("d").unwrap().is_empty());
@@ -1627,8 +2180,13 @@ mod tests {
             name: name.into(),
             description: desc.map(Into::into),
             payload: p,
+            amend: false,
         };
         let a = s.save_question_set(&input(None, "Support triage!", None, payload(2))).unwrap();
+        // autosave while drafting keeps v1
+        let amended = s.save_question_set(&QuestionSetInput { amend: true, ..input(Some(&a.id), "Support triage!", None, payload(3)) }).unwrap();
+        assert_eq!((amended.version, amended.question_count), (1, 3));
+        s.save_question_set(&QuestionSetInput { amend: true, ..input(Some(&a.id), "Support triage!", None, payload(2)) }).unwrap();
         assert_eq!((a.id.as_str(), a.version, a.question_count, a.description.as_str()), ("support-triage", 1, 2, ""));
         let b = s.save_question_set(&input(None, "Support triage", Some("copy"), payload(1))).unwrap();
         assert_eq!(b.id, "support-triage-2");
@@ -1656,4 +2214,55 @@ mod tests {
         assert_eq!(s.list_question_sets().unwrap().len(), 2);
     }
 
+}
+
+#[cfg(test)]
+mod perf {
+    use super::*;
+    use crate::dataset::ParsedDataset;
+    use std::time::Instant;
+
+    /// `cargo test -p classifai-core --release perf_large -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn perf_large_dataset() {
+        let s = Store::open_in_memory().unwrap();
+        let n = 100_000;
+        let rows: Vec<Row> = (0..n)
+            .map(|i| {
+                [
+                    ("text", format!("Customer message number {i}: {}", "lorem ipsum dolor sit amet ".repeat(20))),
+                    ("label", ["billing", "technical", "account", "shipping"][i % 4].to_string()),
+                    ("note", format!("free note {}", i % 50_000)),
+                ]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect()
+            })
+            .collect();
+        let d = s.insert_dataset("big", None, &ParsedDataset { columns: vec!["text".into(), "label".into(), "note".into()], rows }).unwrap();
+
+        let t = Instant::now();
+        let p = s.column_profile(&d.id, "note", 300).unwrap();
+        println!("column_profile(note): {} distinct in {:?}", p.distinct, t.elapsed());
+        let t = Instant::now();
+        let p = s.column_profile(&d.id, "label", 300).unwrap();
+        println!("column_profile(label): {} distinct in {:?}", p.distinct, t.elapsed());
+
+        let t = Instant::now();
+        let full = s.corrected_rows(&d.id, None).unwrap();
+        println!("old plan input — all rows parsed: {} rows in {:?}", full.len(), t.elapsed());
+        let t = Instant::now();
+        let cells = s.column_cells(&d.id, &["label".into()]).unwrap();
+        println!("new plan input — label column only: {} rows in {:?}", cells.len(), t.elapsed());
+        let t = Instant::now();
+        let (_, total) = s.dataset_rows_page(&d.id, 0, 50, Some("number 4242"), None, false).unwrap();
+        println!("search: {total} matches in {:?}", t.elapsed());
+        let t = Instant::now();
+        s.dataset_rows_page(&d.id, 0, 50, None, Some("note"), true).unwrap();
+        println!("sort by note: {:?}", t.elapsed());
+        let t = Instant::now();
+        s.dataset_rows_page(&d.id, 5000, 50, None, None, false).unwrap();
+        println!("page 101: {:?}", t.elapsed());
+    }
 }

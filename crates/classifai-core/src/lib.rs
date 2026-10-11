@@ -17,19 +17,25 @@
 //! - [`decider`]: one entry point for local and cloud decisions, with usage and cost logging
 
 pub mod analysis;
+pub mod bulk;
 pub mod catalog;
 pub mod cloud;
 pub mod dataset;
+pub mod documents;
 pub mod decider;
 pub mod engine;
 pub mod error;
 pub mod eval;
+pub mod hf;
+pub mod labelling;
+pub mod llm;
 pub mod export;
 pub mod ollaya;
 pub mod providers;
 pub mod questions;
 pub mod runner;
 pub mod secrets;
+pub mod spreadsheet;
 pub mod store;
 pub mod task;
 

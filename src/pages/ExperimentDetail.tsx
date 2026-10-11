@@ -6,6 +6,9 @@ import { ThresholdPanel } from "../components/ThresholdPanel";
 import { Badge, Button, CardHeader, ErrorNote, Input, Modal, PageHeader, Progress, Segmented, Select, Spinner, Tooltip } from "../components/ui";
 import { api, errorMessage, events, pickSavePath } from "../lib/api";
 import { kappaWord, openInPlayground } from "../lib/insights";
+import { Clamp } from "../components/Clamp";
+import { ModelLoading } from "../components/RunPieces";
+import { useModelState } from "../lib/modelStatus";
 import { useApp } from "../lib/app";
 import { ago, modelColor, ms, num, pct, shortModel, usd } from "../lib/format";
 import type { Experiment, ExperimentStatus, ModelMetrics, Page, PredictionRow, Report, TaskSpec, UsageRow } from "../lib/types";
@@ -37,7 +40,11 @@ export function ExperimentDetail({ id }: { id: string }) {
   const [usage, setUsage] = useState<Record<string, UsageRow>>({});
   const [error, setError] = useState<unknown>(null);
   const [message, setMessage] = useState<string | null>(null);
+  // The model being loaded into memory before its first request, and since when.
+  const [warming, setWarming] = useState<{ model: string; since: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [asDataset, setAsDataset] = useState<string | null>(null);
+  const [savingDataset, setSavingDataset] = useState(false);
   const [tick, setTick] = useState(0); // bumps when predictions change, to refresh the table
   const [view, setView] = useState<string | null>(null);
   const question = view && view !== OVERALL ? view : undefined;
@@ -64,7 +71,8 @@ export function ExperimentDetail({ id }: { id: string }) {
   useEffect(() => {
     const un = events.progress((ev) => {
       if (ev.experiment_id !== id) return;
-      if (ev.message !== undefined) setMessage(ev.message);
+      if (ev.message !== undefined) setMessage(ev.loading ? null : ev.message);
+      setWarming((w) => (ev.loading && ev.model ? (w?.model === ev.model ? w : { model: ev.model, since: Date.now() }) : null));
       setExp((e) => (e ? { ...e, status: ev.status, progress: ev.model ? { ...e.progress, [ev.model]: ev.done } : e.progress } : e));
       const now = Date.now();
       if (ev.status !== "running" || now - lastRefresh.current > 1500) {
@@ -89,6 +97,7 @@ export function ExperimentDetail({ id }: { id: string }) {
   const overall = view === OVERALL && tasks.length > 1;
 
   const doExport = async (fmt: string) => {
+    if (fmt === "dataset") return setAsDataset(`${exp.name} results`);
     const f = fmt as "csv" | "md" | "html";
     const base = exp.name.replace(/[^\w.-]+/g, "_");
     const filter = f === "csv" ? { name: "CSV", extensions: ["csv"] } : f === "md" ? { name: "Markdown", extensions: ["md"] } : { name: "HTML", extensions: ["html"] };
@@ -110,7 +119,7 @@ export function ExperimentDetail({ id }: { id: string }) {
   return (
     <>
       <PageHeader
-        back={{ label: "Experiments", onClick: () => go({ page: "experiments" }) }}
+        back={{ label: "Evaluations", onClick: () => go({ page: "experiments" }) }}
         title={
           <span className="flex items-center gap-3">
             {exp.name} <StatusBadge status={exp.status} />
@@ -168,9 +177,10 @@ export function ExperimentDetail({ id }: { id: string }) {
                 { value: "csv", label: "Predictions (CSV)" },
                 { value: "md", label: "Report (Markdown)" },
                 { value: "html", label: "Report (HTML)" },
+                { value: "dataset", label: "Predictions as a dataset…" },
               ]}
             />
-            <Tooltip content="Delete experiment" side="bottom">
+            <Tooltip content="Delete evaluation" side="bottom">
               <Button variant="ghost" icon={<Trash2 className="size-3.5" />} onClick={() => setConfirmDelete(true)} />
             </Tooltip>
           </>
@@ -191,16 +201,16 @@ export function ExperimentDetail({ id }: { id: string }) {
           </div>
           <div className="space-y-2.5">
             {exp.config.models.map((m) => (
-              <div key={m} className="grid grid-cols-[10rem_1fr_5rem] items-center gap-3 text-[12.5px]">
-                <span className="flex items-center gap-2 truncate">
-                  <span className="size-2 rounded-full" style={{ background: color(m) }} />
-                  {shortModel(m)}
-                </span>
-                <Progress value={(exp.progress[m] ?? 0) / total} color={color(m)} />
-                <span className="text-right font-mono text-[11.5px] text-muted-foreground tnum">
-                  {exp.progress[m] ?? 0}/{total}
-                </span>
-              </div>
+              <RunningModelRow
+                key={m}
+                model={m}
+                done={exp.progress[m] ?? 0}
+                total={total}
+                color={color(m)}
+                // Models run one after another: the first one not finished is the one working now.
+                current={exp.config.models.find((x) => (exp.progress[x] ?? 0) < total) === m}
+                warmingSince={warming?.model === m ? warming.since : null}
+              />
             ))}
           </div>
         </div>
@@ -220,6 +230,11 @@ export function ExperimentDetail({ id }: { id: string }) {
             <span className="font-medium text-foreground">“{task.instructions}”</span> ·{" "}
             {task.kind === "binary" ? `yes/no, positive = ${task.positive_label}${task.threshold != null ? `, threshold ${task.threshold.toFixed(2)}` : ""}` : `${task.labels.length} labels`} · ground truth{" "}
             <span className="font-mono">{task.label_column}</span>
+            {(exp.config.context?.trim() || task.context?.trim()) && (
+              <Clamp className="mt-1.5 max-w-3xl text-[12px] leading-snug">
+                {[exp.config.context?.trim() && `Shared context: ${exp.config.context.trim()}`, task.context?.trim() && `Context: ${task.context.trim()}`].filter(Boolean).join("\n")}
+              </Clamp>
+            )}
           </div>
 
           {ranked.length > 0 && <Leaderboard report={report} ranked={ranked} color={color} usage={usage} rows={total} onReview={() => go({ page: "review", id, question: task.id })} />}
@@ -266,9 +281,48 @@ export function ExperimentDetail({ id }: { id: string }) {
       )}
 
       <Modal
+        open={asDataset !== null}
+        onClose={() => setAsDataset(null)}
+        title="Save predictions as a dataset"
+        footer={
+          <>
+            <Button onClick={() => setAsDataset(null)}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={savingDataset}
+              disabled={!asDataset?.trim()}
+              onClick={async () => {
+                setSavingDataset(true);
+                try {
+                  const d = await api.experimentSaveAsDataset(id, asDataset ?? "");
+                  setAsDataset(null);
+                  toast(`Saved “${d.name}” · ${d.row_count.toLocaleString()} rows`, "good");
+                  go({ page: "dataset", id: d.id });
+                } catch (e) {
+                  toast(errorMessage(e), "bad");
+                } finally {
+                  setSavingDataset(false);
+                }
+              }}
+            >
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div>
+          <Input value={asDataset ?? ""} onChange={setAsDataset} autoFocus />
+          <p className="mt-3 text-[12.5px] text-muted-foreground">
+            The {total.toLocaleString()} evaluated rows link to <b className="font-medium text-foreground">{exp.dataset_name}</b> rather than being copied. Only a prediction and a confidence column per question
+            {exp.config.models.length > 1 ? " and model" : ""} are stored.
+          </p>
+        </div>
+      </Modal>
+
+      <Modal
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
-        title="Delete experiment?"
+        title="Delete evaluation?"
         footer={
           <>
             <Button onClick={() => setConfirmDelete(false)}>Cancel</Button>
@@ -368,8 +422,8 @@ function Overall({ exp, tick, color, onPick }: { exp: Experiment; tick: number; 
               const top = vals.length ? Math.max(...vals) : null;
               return (
                 <tr key={t.id} className="border-t border-border">
-                  <td className="max-w-[320px] py-1.5 pr-3">
-                    <button onClick={() => onPick(t.id)} className="block w-full truncate text-left hover:text-primary" title={t.instructions}>
+                  <td className="py-1.5 pr-3">
+                    <button onClick={() => onPick(t.id)} className="block w-full max-w-[min(36rem,32vw)] truncate text-left hover:text-primary" title={t.instructions}>
                       <span className="font-medium">{t.label_column}</span> <span className="text-[12px] text-muted-foreground">{t.instructions}</span>
                     </button>
                   </td>
@@ -461,7 +515,7 @@ function Leaderboard({
     { key: "p50", label: "p50", f: (m) => m.latency_p50_ms, fmt: ms, low: true, title: "Median time to answer one row.", highlight: true },
     { key: "p95", label: "p95", f: (m) => m.latency_p95_ms, fmt: ms, low: true, title: "95% of rows were answered within this time.", highlight: true },
     ...(anyCost
-      ? [{ key: "cost", label: "Cost", f: (m: ModelMetrics) => usage[m.model]?.cost_usd ?? 0, fmt: usd, low: true, title: "What this experiment cost, from your per-token prices." }]
+      ? [{ key: "cost", label: "Cost", f: (m: ModelMetrics) => usage[m.model]?.cost_usd ?? 0, fmt: usd, low: true, title: "What this evaluation cost, from your per-token prices." }]
       : []),
     { key: "err", label: "Errors", f: (m) => m.errors, fmt: (v) => String(v), low: true, title: "Rows the model failed to answer." },
   ];
@@ -597,8 +651,8 @@ function ModelDeepDive({ report, color }: { report: Report; color: (m: string) =
               <tbody>
                 {m.per_class.map((c) => (
                   <tr key={c.label} className="border-t border-border">
-                    <td className="max-w-[120px] truncate py-1.5" title={c.label}>
-                      {c.label}
+                    <td className="py-1.5" title={c.label}>
+                      <div className="max-w-[120px] truncate">{c.label}</div>
                     </td>
                     <td className="py-1.5 text-right font-mono text-[11.5px] text-faint tnum">{c.support}</td>
                     <td className="py-1.5 text-right font-mono text-[11.5px] tnum">{num(c.precision, 2)}</td>
@@ -813,8 +867,8 @@ function PredictionsExplorer({
               return (
                 <tr key={r.row_idx} className="group border-t border-border align-top hover:bg-sel/40">
                   <td className="px-4 py-2 font-mono text-[11px] text-faint tnum">{r.row_idx + 1}</td>
-                  <td className="max-w-[380px] cursor-pointer px-3 py-2" onClick={() => setOpen(open === r.row_idx ? null : r.row_idx)}>
-                    <div className={clsx(open === r.row_idx ? "whitespace-pre-wrap" : "truncate")}>
+                  <td className="cursor-pointer px-3 py-2" onClick={() => setOpen(open === r.row_idx ? null : r.row_idx)}>
+                    <div className={clsx("max-w-[380px]", open === r.row_idx ? "whitespace-pre-wrap break-words" : "truncate")}>
                       <InputText input={r.input} expanded={open === r.row_idx} />
                     </div>
                   </td>
@@ -931,7 +985,7 @@ function PredictionsExplorer({
               <span className="w-24 shrink-0 text-right text-muted-foreground">Note:</span>
               <Input className="flex-1" value={relabel.note} onChange={(note) => setRelabel({ ...relabel, note })} placeholder="Optional reason" />
             </div>
-            <div className="pl-26 text-[11.5px] text-faint">Corrections are stored with the dataset and apply to every experiment on it. The original value is kept.</div>
+            <div className="pl-26 text-[11.5px] text-faint">Corrections are stored with the dataset and apply to every evaluation on it. The original value is kept.</div>
           </div>
         )}
       </Modal>
@@ -958,4 +1012,23 @@ export function InputText({ input, expanded }: { input: string; expanded: boolea
   } catch {
     return <>{input}</>;
   }
+}
+
+/** One model's progress in a running evaluation; shows the warm-up while it loads into memory. */
+function RunningModelRow({ model, done, total, color, current, warmingSince }: { model: string; done: number; total: number; color: string; current: boolean; warmingSince: number | null }) {
+  // Before its first answer, the current model may still be loading (also when the page opened after the load began).
+  const { state, since } = useModelState(model, current && done === 0);
+  const loading = warmingSince !== null || (current && done === 0 && state === "loading");
+  return (
+    <div className="grid grid-cols-[10rem_1fr_5rem] items-center gap-3 text-[12.5px]">
+      <span className="flex items-center gap-2 truncate">
+        <span className="size-2 rounded-full" style={{ background: color }} />
+        {shortModel(model)}
+      </span>
+      {loading ? <ModelLoading model={model} since={warmingSince ?? since} compact /> : <Progress value={done / total} color={color} />}
+      <span className="text-right font-mono text-[11.5px] text-muted-foreground tnum">
+        {done}/{total}
+      </span>
+    </div>
+  );
 }

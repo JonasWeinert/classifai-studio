@@ -1,4 +1,5 @@
 import { Info, Lock } from "lucide-react";
+import { Panes } from "../components/Panes";
 import { useState } from "react";
 import { Badge, Button, FormRow, Input, PageHeader, Section, Segmented, Select } from "../components/ui";
 import { api } from "../lib/api";
@@ -60,7 +61,7 @@ export function FineTune() {
         This screen is a design preview — nothing here runs yet.
       </div>
 
-      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-12">
+      <Panes template="minmax(0,1fr) minmax(0,1fr)" className="gap-12">
         <div>
           <Section title="Method">
             <Segmented
@@ -88,7 +89,7 @@ export function FineTune() {
             <FormRow label="Labelled data:" labelWidth={120}>
               <Select value={dataset || datasets.data?.[0]?.id || ""} onChange={setDataset} options={(datasets.data ?? []).map((d) => ({ value: d.id, label: d.name }))} />
             </FormRow>
-            <FormRow label="Held out:" labelWidth={120} hint="Evaluated before and after, as a regular experiment.">
+            <FormRow label="Held out:" labelWidth={120} hint="Evaluated before and after, as a regular evaluation.">
               <Input className="max-w-[6rem]" value={split} onChange={setSplit} />
             </FormRow>
             <FormRow label="" labelWidth={120}>
@@ -130,7 +131,7 @@ export function FineTune() {
             </div>
           </Section>
         </div>
-      </div>
+      </Panes>
     </>
   );
 }

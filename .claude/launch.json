@@ -4,8 +4,22 @@
     {
       "name": "web-preview",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["dev"],
+      "runtimeArgs": [
+        "dev"
+      ],
       "port": 1420
+    },
+    {
+      "name": "web-preview-alt",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "exec",
+        "vite",
+        "--port",
+        "1421",
+        "--strictPort"
+      ],
+      "port": 1421
     }
   ]
 }

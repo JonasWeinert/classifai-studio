@@ -1,5 +1,7 @@
 import { cn } from "@/lib/utils";
-import { AlertCircle, Merge, Play, Plus, Trash2 } from "lucide-react";
+import { Panes } from "../components/Panes";
+import { AlertCircle, Info, Merge, Play, Plus, Trash2 } from "lucide-react";
+import { BranchRow, BranchTag } from "../components/FollowUps";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ModelPicker } from "../components/ModelPicker";
 import { Badge, Button, Checkbox, Disclosure, ErrorNote, FormRow, Input, Modal, PageHeader, Section, Segmented, Select, Spinner, Textarea, Tooltip } from "../components/ui";
@@ -40,7 +42,36 @@ interface QDraft {
   labels: LabelRow[] | null;
   positive: string;
   seed?: Seed;
+  /** Distinct non-empty values in the column (all of them, not only the loaded ones). */
+  distinct?: number;
+  /** The user chose to use a column with too many values anyway (its most frequent ones). */
+  manyValuesOk?: boolean;
+  /**
+   * Follow-up: asked only when question `parent` (a key) is predicted as one of `answers`. Answers
+   * are label values, or "yes"/"no" for a yes/no parent (from a question set) until resolved.
+   */
+  when?: { parent: number; answers: string[] } | null;
 }
+
+/** A follow-up's answers as label values of its parent: yes/no mapped to the parent's labels, spellings matched to labels and aliases. */
+function resolveAnswers(parent: QDraft, answers: string[]): string[] {
+  const inc = (parent.labels ?? []).filter((l) => l.include);
+  const out = answers.flatMap((a) => {
+    if (parent.kind === "binary" && /^(yes|no)$/i.test(a.trim())) {
+      const neg = inc.find((l) => l.value !== parent.positive)?.value;
+      return a.trim().toLowerCase() === "yes" ? [parent.positive] : neg ? [neg] : [];
+    }
+    const hit = inc.find((l) => labelKey(l.value) === labelKey(a) || l.aliases.some((x) => labelKey(x) === labelKey(a)));
+    return hit ? [hit.value] : [];
+  });
+  return [...new Set(out.filter(Boolean))];
+}
+
+/** A label column has at most this many labels; columns with more distinct values are free text or ids. */
+const MAX_LABELS = 255;
+/** Label rows drawn before "Show all". */
+const VISIBLE_LABELS = 60;
+const tooManyValues = (q: QDraft) => (q.distinct ?? 0) > MAX_LABELS && !q.manyValuesOk;
 
 interface Prefill {
   datasetId: string;
@@ -149,6 +180,8 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
   const [expTick, setExpTick] = useState(0);
   const [setTick, setSetTick] = useState(0);
   const pendingSet = useRef<QuestionSet | null>(null);
+  // Free-text questions of the loaded set: shown greyed, since decision models can't answer them.
+  const [freeText, setFreeText] = useState<{ set: string; titles: string[] } | null>(null);
   const [prefillLoading, setPrefillLoading] = useState(!!(fromExperiment || fromSet));
 
   // ---- prefill from an experiment ("Duplicate…") or a question set --------------------------------
@@ -162,9 +195,17 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
           datasetId: c.dataset_id,
           inputs: c.input_columns,
           context: c.context ?? "",
-          qs: c.tasks.map((t) =>
-            blankQuestion(t.label_column, { kind: t.kind, specs: t.labels, positive: t.positive_label }, { instructions: t.instructions, instructionsTouched: true, context: t.context ?? "", kind: t.kind }),
-          ),
+          qs: (() => {
+            const out = c.tasks.map((t) =>
+              blankQuestion(t.label_column, { kind: t.kind, specs: t.labels, positive: t.positive_label }, { instructions: t.instructions, instructionsTouched: true, context: t.context ?? "", kind: t.kind }),
+            );
+            // Follow-ups point at their parent's key here, not its task id.
+            c.tasks.forEach((t, i) => {
+              const p = t.when ? c.tasks.findIndex((x) => x.id === t.when!.parent) : -1;
+              if (p >= 0) out[i].when = { parent: out[p].key, answers: t.when!.answers };
+            });
+            return out;
+          })(),
           models: c.models,
           sample: c.sample_size ? String(c.sample_size) : undefined,
           name: `${e.name} (copy)`,
@@ -234,15 +275,19 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
     const usable = s.payload.questions.filter((q) => q.kind === "choice" || q.kind === "noul");
     const taken = [...inputs];
     const out: QDraft[] = [];
+    const keyOfRid = new Map<string, number>();
     for (const sq of usable) {
       const free = ds.columns.filter((c) => !taken.includes(c));
       if (!free.length) break;
       const col = guessLabelColumn(free);
       taken.push(col);
       const descs = Object.fromEntries(sq.options.filter((o) => o.description.trim()).map((o) => [o.name.trim().toLowerCase(), o.description.trim()]));
-      out.push(
-        blankQuestion(col, { kind: sq.kind === "noul" ? "binary" : "choice", descs, yes: sq.yes, no: sq.no }, { instructions: sq.text, instructionsTouched: !!sq.text.trim(), context: sq.context ?? "" }),
-      );
+      const q = blankQuestion(col, { kind: sq.kind === "noul" ? "binary" : "choice", descs, yes: sq.yes, no: sq.no }, { instructions: sq.text, instructionsTouched: !!sq.text.trim(), context: sq.context ?? "" });
+      if (sq.rid) keyOfRid.set(sq.rid, q.key);
+      // Follow-ups keep their condition when the parent is evaluated too (answers resolve once its labels load).
+      const parentKey = sq.when ? keyOfRid.get(sq.when.parent) : undefined;
+      if (parentKey !== undefined && sq.when!.answers.length) q.when = { parent: parentKey, answers: sq.when!.answers };
+      out.push(q);
     }
     if (!out.length) {
       toast(`“${s.name}” has no pick-one or yes/no questions`, "bad");
@@ -250,8 +295,10 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
     }
     if (s.payload.context?.trim()) setContext(s.payload.context);
     setQs(out);
-    const skipped = s.payload.questions.length - out.length;
-    toast(`Loaded ${out.length} question${out.length === 1 ? "" : "s"} from “${s.name}”${skipped ? ` · ${skipped} skipped (no free column or unsupported type)` : ""}`, skipped ? "neutral" : "good");
+    const free = s.payload.questions.filter((q) => q.kind === "text").map((q) => q.text.trim() || "Free-text question");
+    setFreeText(free.length ? { set: s.name, titles: free } : null);
+    const skipped = s.payload.questions.length - out.length - free.length;
+    toast(`Loaded ${out.length} question${out.length === 1 ? "" : "s"} from “${s.name}”${skipped ? ` · ${skipped} skipped (no free column or unsupported type)` : ""}${free.length ? ` · ${free.length} free-text not evaluated` : ""}`, skipped || free.length ? "neutral" : "good");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ds, inputs.length, setTick]);
 
@@ -260,8 +307,9 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
   useEffect(() => {
     if (!ds) return;
     qs.filter((q) => q.labels === null).forEach((q) => {
-      api.valueCounts(ds.id, q.column).then((vc) => {
-        setQs((all) => all.map((x) => (x.key === q.key && x.column === q.column && x.labels === null ? { ...x, ...loadLabels(x, vc) } : x)));
+      // One SQL pass: the 300 most frequent values and how many distinct values there are.
+      api.columnProfile(ds.id, q.column, 300).then((p) => {
+        setQs((all) => all.map((x) => (x.key === q.key && x.column === q.column && x.labels === null ? { ...x, ...loadLabels(x, p.top), distinct: p.distinct, manyValuesOk: false } : x)));
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -293,6 +341,10 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
       const field = `q:${q.key}` as const;
       if (labelCols.indexOf(q.column) !== i) p.push({ field, msg: `“${q.column}” is already used by another question — each question needs its own ground-truth column` });
       if (!q.instructions.trim()) p.push({ field, msg: q.kind === "binary" ? "Write the statement the model should judge" : "Write the question" });
+      if (tooManyValues(q)) {
+        p.push({ field, msg: `“${q.column}” has ${q.distinct!.toLocaleString()} different values — choose a column with a few repeated labels` });
+        return;
+      }
       const included = (q.labels ?? []).filter((l) => l.include);
       if (q.labels && q.kind === "binary" && included.length !== 2) p.push({ field, msg: `Yes/no needs exactly two included labels (${included.length} now)` });
       if (q.labels && q.kind === "binary" && included.length === 2 && !included.some((l) => l.value === q.positive)) p.push({ field, msg: "Pick the positive label" });
@@ -323,6 +375,13 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
           label_column: q.column,
           labels: included.map((l) => ({ value: l.value, description: l.description.trim() || null, aliases: l.aliases.length ? l.aliases : undefined })),
           positive_label: q.kind === "binary" ? q.positive : null,
+          when: (() => {
+            const p = q.when ? qs.find((x) => x.key === q.when!.parent) : undefined;
+            const answers = p ? resolveAnswers(p, q.when!.answers) : [];
+            // Parents come first, so their id is already assigned.
+            const pid = p ? ids[qs.indexOf(p)] : undefined;
+            return pid && answers.length ? { parent: pid, answers } : null;
+          })(),
         };
       }),
       models: selModels,
@@ -372,7 +431,7 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
     try {
       const id = await api.experimentCreate(config);
       await api.experimentStart(id);
-      toast("Experiment started", "good");
+      toast("Evaluation started", "good");
       go({ page: "experiment", id });
     } catch (e) {
       setError(e);
@@ -402,8 +461,8 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
   return (
     <>
       <PageHeader
-        back={{ label: datasetId ? "Dataset" : "Experiments", onClick: () => (datasetId ? go({ page: "dataset", id: datasetId }) : go({ page: "experiments" })) }}
-        title={fromExperiment ? "Duplicate Experiment" : "New Experiment"}
+        back={{ label: datasetId ? "Dataset" : "Evaluations", onClick: () => (datasetId ? go({ page: "dataset", id: datasetId }) : go({ page: "experiments" })) }}
+        title={fromExperiment ? "Duplicate Evaluation" : "New Evaluation"}
         subtitle="Run rows through several models and score every question against its ground truth."
         actions={
           <Button variant="primary" loading={busy} onClick={onStart} icon={<Play className="size-3.5" />}>
@@ -412,7 +471,7 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
         }
       />
 
-      <div className="grid grid-cols-[minmax(0,1fr)_260px] items-start gap-10">
+      <Panes template="minmax(0,1fr) 260px" className="gap-10">
         <div>
           <Section title="Data">
             <div id="field-dataset">
@@ -456,7 +515,11 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
 
           <Section
             title="Questions"
-            subtitle="Add as many questions as you like and pick the ground-truth column for each. All are asked in one pass per row and model."
+            subtitle={
+              qs.some((q) => q.when)
+                ? "Questions without a condition are asked in one pass per row and model; follow-ups run in a further pass with the earlier answers added to the input."
+                : "Add as many questions as you like and pick the ground-truth column for each. All are asked in one pass per row and model."
+            }
             actions={
               <>
                 {(sets.data?.length ?? 0) > 0 && (
@@ -482,10 +545,37 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
                   problems={problemsFor(`q:${q.key}`)}
                   columns={(ds?.columns ?? []).filter((c) => c === q.column || (!labelCols.includes(c) && !inputs.includes(c)))}
                   onChange={(p) => update(q.key, p)}
-                  onRemove={qs.length > 1 ? () => setQs(qs.filter((x) => x.key !== q.key)) : undefined}
+                  onRemove={qs.length > 1 ? () => setQs(qs.filter((x) => x.key !== q.key).map((x) => (x.when?.parent === q.key ? { ...x, when: null } : x))) : undefined}
+                  all={qs}
+                  onAddFollowUp={
+                    freeColumns.length > 0
+                      ? (answer: string) => {
+                          const at = qs.indexOf(q);
+                          let end = at + 1;
+                          while (end < qs.length && qs[end].when?.parent === q.key) end++;
+                          const child = { ...blankQuestion(guessLabelColumn(freeColumns)), when: { parent: q.key, answers: [answer] } };
+                          setQs([...qs.slice(0, end), child, ...qs.slice(end)]);
+                        }
+                      : undefined
+                  }
                 />
               ))}
+              {freeText?.titles.map((t, i) => (
+                <div key={i} className="flex items-center gap-3 py-3 opacity-55" title="Free-text questions are answered only by LLMs and in manual labelling">
+                  <span className="w-5 text-[12px] font-semibold text-faint">—</span>
+                  <span className="min-w-0 flex-1 truncate text-[13px]">{t}</span>
+                  <span className="shrink-0 rounded-full bg-sel px-2 py-0.5 text-[11px] text-muted-foreground">Free text · not evaluated</span>
+                </div>
+              ))}
             </div>
+            {freeText && (
+              <div className="mt-2 flex gap-2 rounded-[10px] bg-sel px-3 py-2 text-[12px] leading-snug text-muted-foreground">
+                <Info className="mt-px size-3.5 shrink-0 text-faint" />
+                <span>
+                  {freeText.titles.length} free-text question{freeText.titles.length === 1 ? "" : "s"} from “{freeText.set}” {freeText.titles.length === 1 ? "is" : "are"} left out: they are answered only by LLMs and in manual labelling, and every model here is a decision model.
+                </span>
+              </div>
+            )}
           </Section>
 
           <Section title="Models">
@@ -562,7 +652,7 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
           {attempted && problems.length > 0 && <div className="text-[11.5px] text-faint">Fix these to start.</div>}
           {error != null && <ErrorNote error={error} />}
         </aside>
-      </div>
+      </Panes>
 
       <Modal
         open={confirmCost}
@@ -578,7 +668,7 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
         }
       >
         <p className="text-muted-foreground">
-          This experiment sends about <b className="text-foreground tnum">{estimate?.requests.toLocaleString()}</b> requests to cloud models and should cost roughly{" "}
+          This evaluation sends about <b className="text-foreground tnum">{estimate?.requests.toLocaleString()}</b> requests to cloud models and should cost roughly{" "}
           <b className="text-foreground tnum">{estimate ? usd(estimate.total_cost_usd) : ""}</b>, taking {estimate ? fmtTime(estimate.total_seconds) : ""}.
         </p>
         {estimate && <EstimateTable estimate={estimate} />}
@@ -612,7 +702,7 @@ function EstimateTable({ estimate }: { estimate: Estimate }) {
         {estimate.per_model.map((m, i) => (
           <tr key={m.model} className="border-t border-border first:border-0">
             <td className="py-1 pr-2">
-              <span className="flex items-center gap-1.5 truncate">
+              <span className="flex max-w-[14rem] items-center gap-1.5 truncate">
                 <span className="size-1.5 shrink-0 rounded-full" style={{ background: modelColor(i) }} />
                 {shortModel(m.model)}
               </span>
@@ -640,9 +730,32 @@ function FieldProblems({ msgs }: { msgs: string[] }) {
   );
 }
 
-function QuestionBlock({ q, index, columns, problems, onChange, onRemove }: { q: QDraft; index: number; columns: string[]; problems: string[]; onChange: (p: Partial<QDraft>) => void; onRemove?: () => void }) {
+function QuestionBlock({
+  q,
+  index,
+  columns,
+  problems,
+  onChange,
+  onRemove,
+  all,
+  onAddFollowUp,
+}: {
+  q: QDraft;
+  index: number;
+  columns: string[];
+  problems: string[];
+  onChange: (p: Partial<QDraft>) => void;
+  onRemove?: () => void;
+  all: QDraft[];
+  onAddFollowUp?: (answer: string) => void;
+}) {
+  const parent = q.when ? all.find((x) => x.key === q.when!.parent && x.key !== q.key) : undefined;
   const included = q.labels?.filter((l) => l.include) ?? [];
-  const tooMany = (q.labels?.length ?? 0) > 255;
+  const [showAll, setShowAll] = useState(false);
+  // Only the row under the pointer (or keyboard focus) gets a real "Merge into…" menu: one menu
+  // per row, each listing every label, would be N² elements for long label lists.
+  const [mergeRow, setMergeRow] = useState<string | null>(null);
+  const visible = q.labels ? (showAll ? q.labels : q.labels.slice(0, VISIBLE_LABELS)) : [];
   const groups = q.labels ? variantGroups(q.labels) : [];
   const regen = (kind: TaskKind, positive: string) => (q.instructionsTouched ? q.instructions : defaultInstructions(q.column, kind, positive));
 
@@ -665,7 +778,21 @@ function QuestionBlock({ q, index, columns, problems, onChange, onRemove }: { q:
   };
 
   return (
-    <div id={`field-q-${q.key}`} className="py-5 first:pt-0 fade-up">
+    <div id={`field-q-${q.key}`} className="group/q py-5 first:pt-0 fade-up">
+      <div className={cn(parent && "border-l-2 border-primary/30 pl-3")}>
+      {parent && (
+        <BranchTag
+          parentIndex={all.indexOf(parent)}
+          parentTitle={parent.instructions}
+          choices={(parent.labels ?? []).filter((l) => l.include).map((l) => l.value)}
+          picked={(v) => resolveAnswers(parent, q.when!.answers).includes(v)}
+          onToggle={(v) => {
+            const cur = resolveAnswers(parent, q.when!.answers);
+            onChange({ when: { ...q.when!, answers: cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v] } });
+          }}
+          onUnlink={() => onChange({ when: null })}
+        />
+      )}
       {/* Same shape as the Playground editor: the question first, then where its answers are checked. */}
       <div className="mb-2 flex items-center gap-2">
         <span className="w-5 text-[12px] font-semibold text-faint tnum">{index + 1}</span>
@@ -701,13 +828,33 @@ function QuestionBlock({ q, index, columns, problems, onChange, onRemove }: { q:
           </span>
         </div>
 
-        <Disclosure label={q.context.trim() ? "Context" : "Add context"} defaultOpen={!!q.context}>
-          <Textarea rows={2} value={q.context} onChange={(e) => onChange({ context: e.target.value })} placeholder="Guidance for this question only — definitions, edge cases, coding rules." />
-        </Disclosure>
+        <div className="flex flex-wrap items-start gap-x-4 gap-y-1">
+          <Disclosure label={q.context.trim() ? "Context" : "Add context"} defaultOpen={!!q.context}>
+            <Textarea rows={2} value={q.context} onChange={(e) => onChange({ context: e.target.value })} placeholder="Guidance for this question only — definitions, edge cases, coding rules." />
+          </Disclosure>
+        </div>
+        {onAddFollowUp && q.labels && (
+          <BranchRow
+            choices={(q.labels ?? []).filter((l) => l.include).map((l) => l.value)}
+            counts={Object.fromEntries((q.labels ?? []).map((l) => [l.value.toLowerCase(), all.filter((x) => x.when?.parent === q.key && resolveAnswers(q, x.when.answers).includes(l.value)).length]))}
+            onAdd={onAddFollowUp}
+          />
+        )}
 
-        {tooMany && <ErrorNote>“{q.column}” has more than 255 distinct values — it probably isn't a label column.</ErrorNote>}
         {!q.labels ? (
-          <Spinner />
+          <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+            <Spinner delay={0} /> Reading the values of “{q.column}”…
+          </div>
+        ) : tooManyValues(q) ? (
+          <div className="rounded-[12px] bg-warn-soft px-3.5 py-3 text-[12.5px] fade-up">
+            <div className="font-medium text-warn">
+              “{q.column}” has {q.distinct!.toLocaleString()} different values — that looks like free text or an ID, not labels.
+            </div>
+            <div className="mt-1 text-muted-foreground">Pick a ground-truth column whose values repeat (a category, a yes/no, a rating). Or, if this really is a label column, use its most frequent values.</div>
+            <Button size="sm" className="mt-2.5" onClick={() => onChange({ manyValuesOk: true, labels: q.labels!.map((l, i) => ({ ...l, include: i < 20 })) })}>
+              Use the 20 most frequent values
+            </Button>
+          </div>
         ) : (
           <div>
             {q.kind === "binary" && included.length >= 2 && (
@@ -760,14 +907,14 @@ function QuestionBlock({ q, index, columns, problems, onChange, onRemove }: { q:
                   </tr>
                 </thead>
                 <tbody>
-                  {q.labels.map((l, i) => (
-                    <tr key={l.value} className={cn("group border-b border-border/60 last:border-0 transition-opacity", !l.include && "opacity-40")}>
+                  {visible.map((l, i) => (
+                    <tr key={l.value} onMouseEnter={() => setMergeRow(l.value)} className={cn("group border-b border-border/60 last:border-0 transition-opacity", !l.include && "opacity-40")}>
                       <td className="py-1 pl-1">
                         <Checkbox checked={l.include} onChange={(include) => setLabels(q.labels!.map((x, k) => (k === i ? { ...x, include } : x)))} />
                       </td>
-                      <td className="max-w-[180px] py-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className="truncate font-medium" title={l.value}>
+                      <td className="py-1">
+                        <div className="flex max-w-[180px] items-center gap-1.5">
+                          <span className="min-w-0 truncate font-medium" title={l.value}>
                             {l.value}
                           </span>
                           {q.kind === "binary" && q.positive === l.value && <Badge tone="accent">positive</Badge>}
@@ -795,23 +942,37 @@ function QuestionBlock({ q, index, columns, problems, onChange, onRemove }: { q:
                         />
                       </td>
                       <td className="py-1 pl-2 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                        {q.labels!.length > 1 && (
-                          <Select
-                            className="min-w-[9rem]"
-                            value=""
-                            placeholder="Merge into…"
-                            onChange={(into) => merge(l.value, into)}
-                            options={q.labels!.filter((x) => x.value !== l.value).map((x) => ({ value: x.value, label: x.value }))}
-                          />
-                        )}
+                        {q.labels!.length > 1 &&
+                          (mergeRow === l.value ? (
+                            <Select
+                              className="min-w-[9rem]"
+                              value=""
+                              placeholder="Merge into…"
+                              onChange={(into) => merge(l.value, into)}
+                              options={q.labels!.filter((x) => x.value !== l.value).map((x) => ({ value: x.value, label: x.value }))}
+                            />
+                          ) : (
+                            <button onFocus={() => setMergeRow(l.value)} className="h-[26px] min-w-[9rem] rounded-[8px] border border-border px-2.5 text-left text-[12px] text-muted-foreground">
+                              Merge into…
+                            </button>
+                          ))}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            {q.labels.length > VISIBLE_LABELS && (
+              <button onClick={() => setShowAll(!showAll)} className="mt-1.5 text-[12px] text-primary hover:underline">
+                {showAll ? `Show the first ${VISIBLE_LABELS}` : `Show all ${q.labels.length} values`}
+              </button>
+            )}
+            {(q.distinct ?? 0) > q.labels.length && (
+              <div className="mt-1 text-[11.5px] text-faint">The {q.labels.length} most frequent of {q.distinct!.toLocaleString()} values are listed.</div>
+            )}
           </div>
         )}
+      </div>
       </div>
     </div>
   );

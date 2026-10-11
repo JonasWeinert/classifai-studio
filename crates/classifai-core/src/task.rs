@@ -49,6 +49,16 @@ pub struct TaskSpec {
     /// Binary only: P(true) at or above this is predicted positive. Default 0.5.
     #[serde(default)]
     pub threshold: Option<f64>,
+    /// Follow-up: asked in a later pass, only when task `parent` predicted one of `answers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<TaskRoute>,
+}
+
+/// "Ask only when the task `parent` is predicted as one of `answers` (its label values)."
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TaskRoute {
+    pub parent: String,
+    pub answers: Vec<String>,
 }
 
 /// Id given to the single question of experiments created before multi-question support.
@@ -155,6 +165,22 @@ impl ExperimentConfig {
                 )));
             }
         }
+        // Follow-ups point at an earlier question (so passes can't loop) and at its labels.
+        for (i, t) in self.tasks.iter().enumerate() {
+            let Some(w) = &t.when else { continue };
+            let Some(p) = self.tasks.iter().position(|x| x.id == w.parent) else {
+                return Err(Error::invalid(format!("{}: follow-up of an unknown question \"{}\"", t.id, w.parent)));
+            };
+            if p >= i {
+                return Err(Error::invalid(format!("{}: a follow-up must come after the question it follows", t.id)));
+            }
+            if w.answers.is_empty() {
+                return Err(Error::invalid(format!("{}: pick the answers of \"{}\" that trigger this follow-up", t.id, w.parent)));
+            }
+            if let Some(bad) = w.answers.iter().find(|a| !self.tasks[p].labels.iter().any(|l| &l.value == *a)) {
+                return Err(Error::invalid(format!("{}: \"{bad}\" is not a label of \"{}\"", t.id, w.parent)));
+            }
+        }
         // Every task is one primitive question today; kept explicit for future expanded kinds.
         if self.tasks.len() > MAX_PRIMITIVE_QUESTIONS {
             return Err(Error::invalid(format!("at most {MAX_PRIMITIVE_QUESTIONS} model questions per request")));
@@ -178,6 +204,30 @@ impl ExperimentConfig {
         state(&self.input_columns, row)
     }
 
+    /// The questions of some tasks, keyed by task id, for one request.
+    pub fn questions_of(&self, tasks: &[&TaskSpec]) -> IndexMap<String, Question> {
+        tasks.iter().map(|t| (t.id.clone(), t.question(self.context.as_deref()))).collect()
+    }
+
+    /// The tasks asked first: those without a condition.
+    pub fn roots(&self) -> Vec<&TaskSpec> {
+        self.tasks.iter().filter(|t| t.when.is_none()).collect()
+    }
+
+    /// The parent chain of a task (oldest first).
+    pub fn ancestors(&self, task: &TaskSpec) -> Vec<&TaskSpec> {
+        let mut out = Vec::new();
+        let mut cur = task;
+        while let Some(p) = cur.when.as_ref().and_then(|w| self.task(&w.parent)) {
+            if out.len() > self.tasks.len() {
+                break;
+            }
+            out.insert(0, p);
+            cur = p;
+        }
+        out
+    }
+
     /// A row is worth asking when at least one question has a ground truth for it.
     pub fn has_ground_truth(&self, row: &Row) -> bool {
         self.tasks.iter().any(|t| t.ground_truth(row).is_some())
@@ -194,6 +244,23 @@ pub fn state(input_columns: &[String], row: &Row) -> Value {
         .map(|c| (c.clone(), Value::String(row.get(c).cloned().unwrap_or_default())))
         .collect();
     Value::Object(obj)
+}
+
+/// The input of a follow-up pass: the earlier questions and their answers appended — to the text
+/// (one input column) or as an `Earlier answers` field (several columns).
+pub fn with_earlier_answers(state: Value, earlier: &[(String, String)]) -> Value {
+    if earlier.is_empty() {
+        return state;
+    }
+    let lines = earlier.iter().map(|(q, a)| format!("- {q}: {a}")).collect::<Vec<_>>().join("\n");
+    match state {
+        Value::String(s) => Value::String(format!("{s}\n\nEarlier answers:\n{lines}")),
+        Value::Object(mut o) => {
+            o.insert("Earlier answers".into(), Value::String(lines));
+            Value::Object(o)
+        }
+        other => other,
+    }
 }
 
 /// The instructions sent to the model: `"{instructions}\n\nContext: {shared}\n{question}"`, with
@@ -348,6 +415,7 @@ mod tests {
             ],
             positive_label: Some("spam".into()),
             threshold: None,
+            when: None,
         }
     }
 

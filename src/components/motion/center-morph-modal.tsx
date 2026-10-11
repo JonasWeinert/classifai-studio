@@ -64,12 +64,17 @@ export function CenterMorphModal({
   const controlled = controlledOpen !== undefined;
   const open = controlled ? controlledOpen : internalOpen;
 
+  // Callers usually pass an inline `onOpenChange`; keep `setOpen` stable anyway, so the context
+  // (and the content's open/focus effect) only changes when `open` does. Otherwise every parent
+  // render re-ran that effect and pulled focus back to the first field while typing.
+  const onOpenChangeRef = useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
   const setOpen = useCallback(
     (next: boolean) => {
       if (!controlled) setInternalOpen(next);
-      onOpenChange?.(next);
+      onOpenChangeRef.current?.(next);
     },
-    [controlled, onOpenChange],
+    [controlled],
   );
 
   const value = useMemo<CenterMorphModalContextValue>(
@@ -202,7 +207,10 @@ export function CenterMorphModalContent({
 
   useEffect(() => setMounted(true), []);
 
+  const contextRef = useRef(context);
+  contextRef.current = context;
   useEffect(() => {
+    const context = contextRef.current;
     if (!context.open) return;
 
     const previousOverflow = document.body.style.overflow;
@@ -246,7 +254,7 @@ export function CenterMorphModalContent({
       document.body.style.overflow = previousOverflow;
       document.getElementById(context.triggerId)?.focus();
     };
-  }, [context, dismissible]);
+  }, [context.open, dismissible]);
 
   if (!mounted) return null;
 

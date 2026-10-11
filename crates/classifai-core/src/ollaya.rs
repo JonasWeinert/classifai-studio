@@ -33,6 +33,11 @@ pub enum Question {
         #[serde(skip_serializing_if = "Option::is_none")]
         criteria: Option<NoulCriteria>,
     },
+    /// An open answer in words. Only LLM providers answer these (see [`crate::llm`]).
+    Text {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        instructions: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -61,6 +66,9 @@ pub enum Answer {
     Noul {
         noul: f64,
     },
+    Text {
+        text: String,
+    },
 }
 
 /// Tokens billed for one request (Ollaya and the TypeSafe wire format report the same shape).
@@ -80,6 +88,7 @@ impl Answer {
                 probabilities.values().copied().fold(0.0, f64::max)
             }
             Answer::Noul { noul } => noul.max(1.0 - noul),
+            Answer::Text { .. } => 1.0,
         }
     }
 }
@@ -252,6 +261,25 @@ impl Client {
         }
         let r = self.http.get(self.url("/api/tags")).send().await.map_err(|e| self.map_send_err(e))?;
         Ok(Self::check(r).await?.json::<Tags>().await?.models)
+    }
+
+    /// `GET /api/ps`: names of the models currently loaded in memory.
+    pub async fn loaded(&self) -> Result<Vec<String>> {
+        #[derive(Deserialize)]
+        struct Ps {
+            #[serde(default)]
+            models: Vec<Running>,
+        }
+        #[derive(Deserialize)]
+        struct Running {
+            #[serde(default)]
+            name: String,
+            #[serde(default)]
+            model: String,
+        }
+        let r = self.http.get(self.url("/api/ps")).send().await.map_err(|e| self.map_send_err(e))?;
+        let ps = Self::check(r).await?.json::<Ps>().await?;
+        Ok(ps.models.into_iter().map(|m| if m.name.is_empty() { m.model } else { m.name }).collect())
     }
 
     pub async fn presets(&self) -> Result<Vec<PresetSummary>> {

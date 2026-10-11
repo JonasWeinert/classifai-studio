@@ -12,7 +12,7 @@ import { RangeSlider } from "@/components/motion/range-slider";
 import { Select as BeSelect, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/motion/select";
 import { Switch as BeSwitch } from "@/components/motion/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/motion/tabs";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { useEffect, useState, type ReactNode, type TextareaHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
 import { useToolbar } from "@/lib/toolbar";
@@ -162,6 +162,15 @@ export function Slider({ value, onChange, min, max, step, className }: { value: 
   return <RangeSlider value={value} onValueChange={onChange} min={min} max={max} step={step} showTicks={false} className={className} />;
 }
 
+/** A term with a plain-language explanation on hover (dotted underline, like a glossary entry). */
+export function Term({ children, tip, className }: { children: ReactNode; tip: string; className?: string }) {
+  return (
+    <span title={tip} className={cn("cursor-help underline decoration-dotted decoration-from-font underline-offset-[3px] [text-decoration-color:var(--border-strong)]", className)}>
+      {children}
+    </span>
+  );
+}
+
 /** A disclosure: "▸ label" that reveals content with beUI's collapsible motion. */
 export function Disclosure({ label, children, defaultOpen, className }: { label: ReactNode; children: ReactNode; defaultOpen?: boolean; className?: string }) {
   return (
@@ -298,10 +307,11 @@ export function Spinner({ className, delay = 200 }: { className?: string; delay?
 export function Modal({ open, onClose, title, children, footer, width = 420 }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; footer?: ReactNode; width?: number }) {
   return (
     <CenterMorphModal open={open} onOpenChange={(o) => !o && onClose()}>
-      <CenterMorphModalContent ariaLabel={typeof title === "string" ? title : "Dialog"} className="rounded-[22px]" backdropClassName="bg-black/15">
-        <div style={{ maxWidth: width }} className="px-6 pt-5 pb-5">
+      <CenterMorphModalContent ariaLabel={typeof title === "string" ? title : "Dialog"} className="w-auto max-w-[calc(100vw-2rem)] rounded-[22px]" backdropClassName="bg-black/15">
+        <div style={{ width, maxWidth: "100%" }} className="px-6 pt-5 pb-5">
           <div className="pr-8 text-[15px] font-semibold">{title}</div>
-          <div className="mt-2 text-[13px]">{children}</div>
+          {/* The body scrolls when tall; title and buttons stay in view. */}
+          <div className="-mx-1.5 mt-2 max-h-[calc(100vh-12rem)] overflow-y-auto px-1.5 text-[13px]">{children}</div>
           {footer && <div className="mt-5 flex justify-end gap-2">{footer}</div>}
         </div>
       </CenterMorphModalContent>
@@ -366,4 +376,37 @@ export function ErrorNote({ children, error }: { children?: ReactNode; error?: u
 
 export function Kbd({ children }: { children: ReactNode }) {
   return <kbd className="rounded-[4px] bg-sel px-1 py-px font-sans text-[11px] text-muted-foreground">{children}</kbd>;
+}
+
+export type SortState<K extends string> = { key: K; desc: boolean } | null;
+
+/** A table header cell that sorts by `k`: ascending, then descending, then off. */
+export function SortTh<K extends string>({ k, sort, onSort, children, align = "left", className }: { k: K; sort: SortState<K>; onSort: (s: SortState<K>) => void; children: ReactNode; align?: "left" | "right"; className?: string }) {
+  const on = sort?.key === k;
+  return (
+    <th aria-sort={on ? (sort!.desc ? "descending" : "ascending") : "none"} className={cn("py-2.5 font-medium", align === "right" ? "text-right" : "text-left", className)}>
+      <button
+        onClick={() => onSort(!on ? { key: k, desc: false } : !sort!.desc ? { key: k, desc: true } : null)}
+        className={cn("inline-flex items-center gap-1 hover:text-foreground", on && "text-foreground", align === "right" && "flex-row-reverse")}
+      >
+        {children}
+        {on ? sort!.desc ? <ArrowDown className="size-3" /> : <ArrowUp className="size-3" /> : <ArrowUpDown className="size-3 opacity-0 transition-opacity [th:hover_&]:opacity-60" />}
+      </button>
+    </th>
+  );
+}
+
+/** Compare for sorting: numbers numerically, text case-insensitively. */
+export function compareValues(a: string | number, b: string | number) {
+  return typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+}
+
+/** A search field with a magnifier. */
+export function SearchField({ value, onChange, placeholder, className }: { value: string; onChange: (v: string) => void; placeholder: string; className?: string }) {
+  return (
+    <div className={cn("relative w-56", className)}>
+      <Input value={value} onChange={onChange} placeholder={placeholder} />
+      {!value && <Search className="pointer-events-none absolute top-1/2 right-2.5 size-3.5 -translate-y-1/2 text-faint" />}
+    </div>
+  );
 }

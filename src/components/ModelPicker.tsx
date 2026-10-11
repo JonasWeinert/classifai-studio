@@ -1,12 +1,15 @@
 import { cn } from "@/lib/utils";
-import { Check, ChevronDown, Cloud, Download, Plus } from "lucide-react";
+import { Check, ChevronDown, Download, Plus } from "lucide-react";
+import { ModelIcon } from "./ProviderLogo";
+import { isLlm } from "../lib/models";
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "../lib/app";
+import { useModelState } from "../lib/modelStatus";
 import { price, shortModel } from "../lib/format";
 
 /** Multi-select chips over installed local models and configured cloud models. */
 export function ModelPicker({ value, onChange, colors, single }: { value: string[]; onChange: (v: string[]) => void; colors?: (i: number) => string; single?: boolean }) {
-  const { models, cloudModels, go } = useApp();
+  const { models, cloudModels, providers, go } = useApp();
   if (models.length === 0 && cloudModels.length === 0) {
     return (
       <button onClick={() => go({ page: "models" })} className="flex w-full items-center gap-2 rounded-[10px] border border-dashed border-border-strong px-3 py-2.5 text-[12.5px] text-muted-foreground hover:text-foreground">
@@ -18,11 +21,12 @@ export function ModelPicker({ value, onChange, colors, single }: { value: string
   const chip = (id: string, label: string, meta: string | null, cloud: boolean) => {
     const i = value.indexOf(id);
     const on = i >= 0;
+    const llm = isLlm(id);
     return (
       <button
         key={id}
         onClick={() => toggle(id)}
-        title={cloud ? `${id} · ${meta}` : id}
+        title={llm ? `${id} · ${meta} — LLM: answers through structured output and writes free text; its probabilities are its own estimates` : cloud ? `${id} · ${meta}` : id}
         className={cn(
           "flex h-[26px] items-center gap-1.5 rounded-full pl-1.5 pr-2.5 text-[12.5px] font-medium transition-colors duration-150",
           on ? "bg-primary/10 text-foreground shadow-[0_0_0_1px_var(--primary)_inset]" : "bg-sel text-muted-foreground hover:text-foreground",
@@ -35,16 +39,30 @@ export function ModelPicker({ value, onChange, colors, single }: { value: string
         ) : (
           <Plus className="size-3.5" />
         )}
-        {cloud && <Cloud className="size-3 text-faint" />}
+        {cloud && <ModelIcon model={id} providers={providers} className="size-3 text-faint" />}
         {label}
         {meta && <span className="font-mono text-[10.5px] text-faint">{meta}</span>}
+        {!cloud && <MemoryDot model={id} />}
       </button>
     );
   };
+  const llms = cloudModels.filter((m) => isLlm(m.id));
+  const decision = cloudModels.filter((m) => !isLlm(m.id));
+  const groups = [
+    { label: "On this Mac", chips: models.map((m) => chip(m.name, shortModel(m.name), m.details.parameter_size || null, false)) },
+    { label: "Cloud decision models", chips: decision.map((m) => chip(m.id, m.display_name, price(m.input_price_per_mtok), true)) },
+    { label: "LLMs · also answer free text", chips: llms.map((m) => chip(m.id, m.display_name, price(m.input_price_per_mtok), true)) },
+  ].filter((g) => g.chips.length);
+  // One kind of model: no headings needed.
+  if (groups.length === 1) return <div className="flex flex-wrap gap-1.5">{groups[0].chips}</div>;
   return (
-    <div className="flex flex-wrap gap-1.5">
-      {models.map((m) => chip(m.name, shortModel(m.name), m.details.parameter_size || null, false))}
-      {cloudModels.map((m) => chip(m.id, m.display_name, price(m.input_price_per_mtok), true))}
+    <div className="space-y-2.5">
+      {groups.map((g) => (
+        <div key={g.label}>
+          <div className="mb-1 text-[11px] font-medium text-faint">{g.label}</div>
+          <div className="flex flex-wrap gap-1.5">{g.chips}</div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -96,4 +114,11 @@ export function ModelMenu({ value, onChange, colors, single }: { value: string[]
       )}
     </div>
   );
+}
+
+/** A local model's memory state: green when loaded (answers fast), pulsing while it loads. */
+function MemoryDot({ model }: { model: string }) {
+  const { state } = useModelState(model);
+  if (state === "cold") return <span title="Not in memory yet: the first request loads it" className="size-1.5 rounded-full border border-faint" />;
+  return <span title={state === "ready" ? "In memory: answers right away" : "Loading into memory…"} className={cn("size-1.5 rounded-full", state === "ready" ? "bg-good" : "animate-pulse bg-primary")} />;
 }

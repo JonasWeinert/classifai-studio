@@ -23,6 +23,11 @@ pub enum ProviderKind {
     Cloudflare,
     /// Any TypeSafe-compatible endpoint (OpenRouter, an AI gateway, a remote Ollaya, ...).
     Custom,
+    /// An LLM behind an OpenAI-compatible Chat Completions API (`POST /v1/chat/completions`) —
+    /// OpenAI, OpenRouter, Groq, a local Ollama or LM Studio — answering through a JSON schema.
+    Chat,
+    /// An Anthropic model (`POST /v1/messages`), answering through a forced tool call.
+    Anthropic,
 }
 
 impl ProviderKind {
@@ -32,7 +37,15 @@ impl ProviderKind {
             Self::Openai => "openai",
             Self::Cloudflare => "cloudflare",
             Self::Custom => "custom",
+            Self::Chat => "chat",
+            Self::Anthropic => "anthropic",
         }
+    }
+
+    /// An LLM provider: answers come from structured output (see [`crate::llm`]), probabilities
+    /// are the model's own estimates, and free-text questions are answered.
+    pub fn is_llm(self) -> bool {
+        matches!(self, Self::Chat | Self::Anthropic)
     }
 
     pub fn parse(s: &str) -> Result<Self> {
@@ -41,13 +54,16 @@ impl ProviderKind {
             "openai" => Ok(Self::Openai),
             "cloudflare" => Ok(Self::Cloudflare),
             "custom" => Ok(Self::Custom),
+            "chat" => Ok(Self::Chat),
+            "anthropic" => Ok(Self::Anthropic),
             other => Err(Error::invalid(format!("unknown provider kind \"{other}\""))),
         }
     }
 
-    /// Hosted providers refuse requests without a key; a custom endpoint may not need one.
+    /// Hosted providers refuse requests without a key; a custom or chat endpoint (e.g. a local
+    /// Ollama) may not need one.
     pub fn requires_key(self) -> bool {
-        !matches!(self, Self::Custom)
+        !matches!(self, Self::Custom | Self::Chat)
     }
 
     /// Base URL used when the provider has no override.
@@ -57,6 +73,8 @@ impl ProviderKind {
             Self::Openai => Some("https://api.openai.com"),
             Self::Cloudflare => Some("https://api.cloudflare.com"),
             Self::Custom => None,
+            Self::Chat => Some("https://api.openai.com"),
+            Self::Anthropic => Some("https://api.anthropic.com"),
         }
     }
 
@@ -253,6 +271,8 @@ pub fn builtin_providers() -> Vec<Provider> {
         p("typesafe", ProviderKind::Typesafe, "TypeSafe"),
         p("openai", ProviderKind::Openai, "OpenAI"),
         p("cloudflare", ProviderKind::Cloudflare, "Cloudflare Workers AI"),
+        p("anthropic", ProviderKind::Anthropic, "Anthropic"),
+        p("openai-chat", ProviderKind::Chat, "OpenAI (LLM)"),
     ]
 }
 
@@ -272,6 +292,10 @@ pub fn builtin_models() -> Vec<CloudModel> {
         m("openai", "gpt-6-luna", "GPT-6 Luna", "OpenAI Decisions API (public beta).", 0.10),
         m("cloudflare", "clef-flash", "Clef Flash", "Fast 9B multimodal decision model on Workers AI.", 0.09),
         m("cloudflare", "clef", "Clef", "Larger decision model on Workers AI.", 0.24),
+        CloudModel {
+            output_price_per_mtok: 5.0,
+            ..m("anthropic", "claude-haiku-4-5-20251001", "Claude Haiku 4.5", "Fast, inexpensive LLM; answers through structured output.", 1.0)
+        },
     ]
 }
 

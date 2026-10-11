@@ -3,7 +3,9 @@
 export type Question =
   | { type: "choice"; instructions?: string; criteria: Record<string, string | null> }
   | { type: "score"; instructions?: string; criteria: string[] }
-  | { type: "noul"; instructions?: string; criteria?: { true?: string; false?: string } };
+  | { type: "noul"; instructions?: string; criteria?: { true?: string; false?: string } }
+  /** An open answer in words: LLMs only. */
+  | { type: "text"; instructions?: string };
 
 export type Answer =
   | { type: "choice"; choice: string; confidence: number; probabilities: Record<string, number> }
@@ -14,7 +16,8 @@ export type Answer =
       legend: Record<string, string>;
       probabilities: Record<string, number>;
     }
-  | { type: "noul"; noul: number };
+  | { type: "noul"; noul: number }
+  | { type: "text"; text: string };
 
 /** Extended question types, expanded into primitives in classifai-core (questions.rs). */
 export type AnyQuestion =
@@ -66,7 +69,8 @@ export interface CatalogModel {
   tags: string[];
 }
 
-export type ProviderKind = "typesafe" | "openai" | "cloudflare" | "custom";
+/** Decision providers (typesafe, openai, cloudflare, custom) and LLM providers (chat, anthropic). */
+export type ProviderKind = "typesafe" | "openai" | "cloudflare" | "custom" | "chat" | "anthropic";
 
 /** A hosted decision model. `id` is "@{provider}/{model}" and is used wherever a model name is. */
 export interface CloudModel {
@@ -104,6 +108,19 @@ export interface ProviderInput {
   account_id?: string | null;
   /** undefined/null = keep, "" = delete, otherwise store in the keychain */
   api_key?: string | null;
+}
+
+/** A model from a provider's own list (GET /v1/models), to pick when adding one. */
+export interface RemoteModel {
+  id: string;
+  name: string;
+  description: string | null;
+  context_length: number | null;
+  /** USD per 1M tokens, when the provider publishes prices (OpenRouter does). */
+  input_price_per_mtok: number | null;
+  output_price_per_mtok: number | null;
+  /** Whether it supports JSON-schema output, when the provider says. */
+  structured_output: boolean | null;
 }
 
 export interface CloudModelInput {
@@ -150,6 +167,8 @@ export interface QuickResult {
   usage?: { input_tokens: number; output_tokens: number };
   cost_usd?: number;
   refused?: string[];
+  /** LLMs only: question id -> the passage of the input the answer rests on, as the model quoted it. */
+  quotes?: Record<string, string>;
 }
 
 export interface Dataset {
@@ -159,6 +178,10 @@ export interface Dataset {
   columns: string[];
   row_count: number;
   created_at: string;
+  /** Set when this dataset links to another's rows (saved results); it stores only `added_columns`. */
+  parent_id?: string | null;
+  parent_name?: string | null;
+  added_columns?: string[];
 }
 
 export type Row = Record<string, string>;
@@ -188,6 +211,8 @@ export interface TaskSpec {
   labels: LabelSpec[];
   positive_label?: string | null;
   threshold?: number | null;
+  /** Follow-up: asked in a later pass, only when task `parent` predicted one of `answers` (label values). */
+  when?: { parent: string; answers: string[] } | null;
 }
 
 export interface ExperimentConfig {
@@ -225,6 +250,8 @@ export interface RunEvent {
   total: number;
   status: ExperimentStatus;
   message: string | null;
+  /** `model` is being loaded into memory before its first request. */
+  loading?: boolean;
 }
 
 export interface ClassMetrics {
@@ -341,9 +368,9 @@ export interface QuestionSetPayload {
   questions: SetQuestion[];
 }
 
-/** One question in a set — the editor's draft shape, shared by Playground and New Experiment. */
+/** One question in a set — the editor's draft shape, shared by Playground and New Evaluation. */
 export interface SetQuestion {
-  kind: "choice" | "multi" | "noul" | "score" | "rank" | "number";
+  kind: "choice" | "multi" | "noul" | "score" | "rank" | "number" | "text";
   text: string;
   context: string;
   options: { name: string; description: string }[];
@@ -353,6 +380,10 @@ export interface SetQuestion {
   levels: string[];
   values: string;
   unit: string;
+  /** Stable id, so follow-ups keep pointing at this question when it is reworded. */
+  rid?: string;
+  /** Follow-up: ask only when the question `parent` (a `rid`) got one of `answers`. */
+  when?: { parent: string; answers: string[] } | null;
 }
 
 export interface ThresholdPoint {
@@ -401,3 +432,175 @@ export interface TrackRecord {
 }
 
 export type ReviewStrategy = "disagree" | "low_confidence" | "wrong";
+
+// ---- Bulk runs -----------------------------------------------------------------------------------
+
+/** How a Bulk run was set up; stored with the run so it can be duplicated. Owned by the app. */
+export interface BulkSetup {
+  source: "paste" | "dataset";
+  paste: string;
+  datasetId: string;
+  cols: string[];
+  limit: string;
+  model: string;
+  questions?: SetQuestion[];
+  context?: string;
+  set?: { id: string; name: string; version: number } | null;
+  /** Question id -> the dataset column it was made from. */
+  sourceColumns?: Record<string, string>;
+}
+
+export interface BulkRunSummary {
+  id: string;
+  name: string;
+  model: string;
+  source: "paste" | "dataset";
+  dataset_id: string | null;
+  dataset_name: string | null;
+  columns: string[];
+  titles: Record<string, string>;
+  setup: BulkSetup | null;
+  status: "running" | "completed" | "cancelled";
+  saved_dataset_id: string | null;
+  saved_dataset_name: string | null;
+  total: number;
+  answered: number;
+  failed: number;
+  cost_usd: number;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface BulkRowData {
+  pos: number;
+  /** Dataset row index, or line number for pasted entries. */
+  idx: number;
+  input: string;
+  fields?: Record<string, string> | null;
+  answers?: Record<string, AnyAnswer> | null;
+  error?: unknown;
+  latency?: number | null;
+  cost?: number | null;
+}
+
+export interface BulkRun extends BulkRunSummary {
+  rows: BulkRowData[];
+}
+
+export interface BulkRunInput {
+  name: string;
+  model: string;
+  source: "paste" | "dataset";
+  dataset_id?: string | null;
+  columns: string[];
+  titles: Record<string, string>;
+  setup: BulkSetup;
+  entries: { row_idx: number; input?: string }[];
+}
+
+// ---- Hugging Face import -------------------------------------------------------------------------
+
+export interface HfFeature {
+  name: string;
+  kind: string;
+  labels: string[] | null;
+}
+
+export interface HfInfo {
+  dataset: string;
+  configs: { config: string; features: HfFeature[]; splits: { split: string; num_rows: number | null }[] }[];
+  can_filter: boolean;
+  can_search: boolean;
+}
+
+export type HfSelection =
+  | { kind: "full" }
+  | { kind: "first"; n: number }
+  | { kind: "random"; n: number; seed: number }
+  | { kind: "range"; offset: number; n: number }
+  | { kind: "filter"; where: string; n: number }
+  | { kind: "search"; query: string; n: number };
+
+export interface HfImportSpec {
+  dataset: string;
+  parts: { config: string; split: string; selection: HfSelection }[];
+  combine: boolean;
+  name?: string | null;
+  columns: string[];
+}
+
+export interface HfProgress {
+  part: number;
+  parts: number;
+  label: string;
+  done: number;
+  total: number;
+}
+
+// ---- Manual labelling ----------------------------------------------------------------------------
+
+/** One stored answer: choice/score → label, multi/rank → labels, yes/no → boolean, number → number. */
+export type LabelValue = string | string[] | boolean | number;
+
+export interface LabelMark {
+  skipped: boolean;
+  flagged: boolean;
+  note: string | null;
+}
+
+export interface LabelSessionSummary {
+  id: string;
+  name: string;
+  dataset_id: string;
+  dataset_name: string;
+  columns: string[];
+  question_set_id: string | null;
+  question_set_version: number | null;
+  questions: QuestionSetPayload;
+  titles: Record<string, string>;
+  row_order: number[];
+  position: number;
+  saved_dataset_id: string | null;
+  saved_dataset_name: string | null;
+  total: number;
+  done: number;
+  partial: number;
+  skipped: number;
+  flagged: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A passage of an entry marked as context for an answer. */
+export interface LabelSnippet {
+  column: string;
+  text: string;
+}
+
+export interface LabelSession extends LabelSessionSummary {
+  answers: Record<number, Record<string, LabelValue>>;
+  marks: Record<number, LabelMark>;
+  /** row -> question id -> passages marked as context for that answer */
+  evidence: Record<number, Record<string, LabelSnippet[]>>;
+}
+
+export interface LabelSessionInput {
+  name: string;
+  dataset_id: string;
+  columns: string[];
+  question_set_id?: string | null;
+  question_set_version?: number | null;
+  questions: QuestionSetPayload;
+  titles: Record<string, string>;
+  order?: "sequential" | "random";
+  limit?: number | null;
+  seed?: number | null;
+}
+
+export interface SheetPreview {
+  name: string;
+  rows: number;
+  preview: string[][];
+  width: number;
+  header_guess: number;
+}

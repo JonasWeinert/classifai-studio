@@ -19,6 +19,8 @@ pub struct AppState {
     pub decider: Arc<Decider>,
     /// experiment id -> cancel flag of the running task
     pub running: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Cancel flag of the Hugging Face import in progress.
+    pub hf_cancel: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -31,12 +33,14 @@ impl AppState {
 const MENU_ACTIONS: &[(&str, &str, &str)] = &[
     ("settings", "Settings…", "CmdOrCtrl+,"),
     ("import", "Import Dataset…", "CmdOrCtrl+O"),
-    ("new-experiment", "New Experiment", "CmdOrCtrl+N"),
+    ("new-experiment", "New Evaluation", "CmdOrCtrl+N"),
     ("nav:quick", "Playground", "CmdOrCtrl+1"),
     ("nav:bulk", "Bulk", "CmdOrCtrl+2"),
-    ("nav:datasets", "Datasets", "CmdOrCtrl+3"),
-    ("nav:experiments", "Experiments", "CmdOrCtrl+4"),
-    ("nav:models", "Models", "CmdOrCtrl+5"),
+    ("nav:experiments", "Evaluations", "CmdOrCtrl+3"),
+    ("nav:labelling", "Manual Labelling", "CmdOrCtrl+4"),
+    ("nav:question-sets", "Question Sets", "CmdOrCtrl+5"),
+    ("nav:datasets", "Datasets", "CmdOrCtrl+6"),
+    ("nav:models", "Models", "CmdOrCtrl+7"),
     ("palette", "Command Palette", "CmdOrCtrl+K"),
     ("back", "Back", "CmdOrCtrl+["),
     ("toggle-sidebar", "Toggle Sidebar", "Ctrl+CmdOrCtrl+S"),
@@ -87,8 +91,13 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .separator()
         .item(&item("nav:quick")?)
         .item(&item("nav:bulk")?)
-        .item(&item("nav:datasets")?)
         .item(&item("nav:experiments")?)
+        .separator()
+        .item(&item("nav:labelling")?)
+        .separator()
+        .item(&item("nav:question-sets")?)
+        .item(&item("nav:datasets")?)
+        .separator()
         .item(&item("nav:models")?)
         .separator()
         .item(&item("palette")?)
@@ -130,6 +139,7 @@ pub fn run() {
                 engine: Arc::new(engine),
                 decider: Arc::new(decider),
                 running: Mutex::new(HashMap::new()),
+                hf_cancel: Arc::new(AtomicBool::new(false)),
             });
 
             // Start the engine in the background if it is installed but not running.
@@ -155,6 +165,7 @@ pub fn run() {
             commands::presets_list,
             commands::preset_show,
             commands::save_text_file,
+            commands::read_text_file,
             commands::quick_classify,
             commands::dataset_import,
             commands::dataset_list,
@@ -162,6 +173,40 @@ pub fn run() {
             commands::dataset_rows,
             commands::dataset_import_text,
             commands::dataset_value_counts,
+            commands::dataset_column_profile,
+            commands::dataset_create,
+            commands::dataset_derive,
+            commands::ui_state_get,
+            commands::models_loaded,
+            commands::spreadsheet_inspect,
+            commands::spreadsheet_import,
+            commands::files_import,
+            commands::hf_info,
+            commands::label_session_create,
+            commands::label_sessions_list,
+            commands::label_session_get,
+            commands::label_answer_set,
+            commands::label_mark_set,
+            commands::label_evidence_set,
+            commands::label_position_set,
+            commands::label_session_update,
+            commands::label_session_set_saved,
+            commands::label_session_delete,
+            commands::dataset_rows_at,
+            commands::hf_import,
+            commands::hf_cancel,
+            commands::hf_token_status,
+            commands::hf_token_set,
+            commands::bulk_run_create,
+            commands::bulk_results_put,
+            commands::bulk_run_finish,
+            commands::bulk_runs_list,
+            commands::bulk_run_get,
+            commands::bulk_run_rename,
+            commands::bulk_run_set_saved,
+            commands::bulk_run_delete,
+            commands::ui_state_set,
+            commands::experiment_save_as_dataset,
             commands::dataset_rename,
             commands::dataset_delete,
             commands::experiment_create,
@@ -194,6 +239,7 @@ pub fn run() {
             commands::provider_save,
             commands::provider_delete,
             commands::provider_test,
+            commands::provider_models,
             commands::cloud_model_save,
             commands::cloud_model_delete,
             commands::usage_summary,

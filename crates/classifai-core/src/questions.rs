@@ -57,6 +57,11 @@ pub enum AnyQuestion {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         unit: Option<String>,
     },
+    /// An open answer in words (LLMs only).
+    Text {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instructions: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -97,6 +102,9 @@ pub enum AnyAnswer {
         /// formatted value -> probability, ascending
         probabilities: IndexMap<String, f64>,
     },
+    Text {
+        text: String,
+    },
 }
 
 impl From<Answer> for AnyAnswer {
@@ -107,6 +115,7 @@ impl From<Answer> for AnyAnswer {
                 AnyAnswer::Score { score, confidence, legend, probabilities }
             }
             Answer::Noul { noul } => AnyAnswer::Noul { noul },
+            Answer::Text { text } => AnyAnswer::Text { text },
         }
     }
 }
@@ -137,6 +146,10 @@ pub fn expand(questions: &IndexMap<String, AnyQuestion>) -> Result<(IndexMap<Str
             }
             AnyQuestion::Score { instructions, criteria } => {
                 out.insert(id.clone(), Question::Score { instructions: instructions.clone(), criteria: criteria.clone() });
+                plan.push(Step::Pass { id: id.clone() });
+            }
+            AnyQuestion::Text { instructions } => {
+                out.insert(id.clone(), Question::Text { instructions: instructions.clone() });
                 plan.push(Step::Pass { id: id.clone() });
             }
             AnyQuestion::Noul { instructions, criteria } => {

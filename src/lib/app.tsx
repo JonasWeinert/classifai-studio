@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { isConnected, isLlmKind, setLlmModels } from "./models";
 import { useAnimatedToastStack, type AnimatedToast } from "@/components/motion/animated-toast-stack";
-import { api, errorMessage, events } from "./api";
+import { api, errorMessage, events, isTauri } from "./api";
 import { load, save } from "./persist";
 import type { BudgetStatus, CloudModel, EngineStatus, LocalModel, Provider, PullEvent } from "./types";
 
@@ -9,7 +10,14 @@ export type ThemePref = "system" | "light" | "dark";
 export type Route =
   | { page: "quick" }
   | { page: "bulk" }
-  | { page: "datasets" }
+  | { page: "bulk-new"; from?: string }
+  | { page: "bulk-run"; id: string }
+  | { page: "question-sets" }
+  | { page: "labelling" }
+  | { page: "label-new" }
+  | { page: "label"; id: string }
+  | { page: "question-set"; id?: string }
+  | { page: "datasets"; hf?: boolean; import?: boolean; workbook?: string; files?: string[] }
   | { page: "dataset"; id: string }
   | { page: "new-experiment"; datasetId?: string; fromExperiment?: string; fromSet?: string }
   | { page: "experiments" }
@@ -118,9 +126,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshProviders();
   }, [refreshProviders]);
 
-  const cloudModels = useMemo(
-    () => providers.filter((p) => p.has_key || p.kind === "custom").flatMap((p) => p.models.filter((m) => m.enabled)),
-    [providers],
+  const cloudModels = useMemo(() => {
+    const ready = providers.filter(isConnected);
+    setLlmModels(ready.filter((p) => isLlmKind(p.kind)).flatMap((p) => p.models.map((m) => m.id)));
+    return ready.flatMap((p) => p.models.filter((m) => m.enabled));
+  }, [providers],
   );
 
   useEffect(() => {
@@ -186,6 +196,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
   }, [dark]);
+  // The sidebar shows the window's native vibrancy material, which follows the window's
+  // appearance: keep that in step with the app's theme, or a dark app gets a light sidebar.
+  useEffect(() => {
+    if (!isTauri) return;
+    import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => getCurrentWindow().setTheme(theme === "system" ? null : theme))
+      .catch(() => {});
+  }, [theme]);
   const setTheme = useCallback((t: ThemePref) => {
     setThemeState(t);
     save("theme", t);

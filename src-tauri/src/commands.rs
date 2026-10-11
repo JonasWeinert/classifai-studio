@@ -5,8 +5,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use classifai_core::analysis::{self, Estimate, PredictionsPage, ThresholdCurve, TrackRecord};
+use classifai_core::bulk::{BulkResult, BulkRun, BulkRunInput, BulkRunSummary};
 use classifai_core::catalog::{CatalogModel, CATALOG};
+use classifai_core::hf::{HfClient, HfImportSpec, HfInfo};
+use classifai_core::labelling::{LabelMark, LabelSession, LabelSessionInput, LabelSessionSummary, LabelSnippet};
+use classifai_core::secrets::{KeychainSecrets, SecretStore};
 use classifai_core::dataset;
+use classifai_core::documents;
+use classifai_core::spreadsheet::{self, SheetPreview};
 use classifai_core::decider::{ProviderTest, UsageContext};
 use classifai_core::engine::EngineStatus;
 use classifai_core::eval::Report;
@@ -16,7 +22,7 @@ use classifai_core::providers::{CloudModelInput, CloudModelView, ProviderInput, 
 use classifai_core::questions::{self, AnyAnswer, AnyQuestion};
 use classifai_core::runner::{self, RunEvent};
 use classifai_core::store::{
-    AppSettings, BudgetStatus, Dataset, Experiment, ExperimentConfig, ExperimentStatus, LabelCorrection, QuestionSet,
+    AppSettings, BudgetStatus, ColumnProfile, Dataset, Experiment, ExperimentConfig, ExperimentStatus, LabelCorrection, QuestionSet,
     QuestionSetInput, QuestionSetSummary, UsageRow, ValueCount,
 };
 use classifai_core::{Error, Result};
@@ -152,6 +158,16 @@ pub async fn preset_show(state: State<'_, AppState>, name: String) -> Result<Ind
 }
 
 /// Write a text file chosen by the user in a save dialog (Playground bulk export).
+/// A text file chosen by the user (question sets to import). Up to 5 MB.
+#[tauri::command]
+pub async fn read_text_file(path: String) -> Result<String> {
+    let meta = tokio::fs::metadata(&path).await?;
+    if meta.len() > 5 * 1024 * 1024 {
+        return Err(Error::invalid("the file is larger than 5 MB"));
+    }
+    Ok(tokio::fs::read_to_string(&path).await?)
+}
+
 #[tauri::command]
 pub async fn save_text_file(path: String, contents: String) -> Result<()> {
     tokio::fs::write(&path, contents).await?;
@@ -187,6 +203,8 @@ pub struct QuickResult {
     latency_ms: f64,
     load_ms: f64,
     state_truncated: bool,
+    /// LLMs only: question id -> the passage of the input the answer rests on (verbatim per the model).
+    quotes: IndexMap<String, String>,
 }
 
 #[tauri::command]
@@ -209,7 +227,14 @@ pub async fn quick_classify(state: State<'_, AppState>, req: QuickRequest) -> Re
         Some((_, plan)) => questions::assemble_except(plan, resp.answers, &resp.refused)?,
         None => (resp.answers.into_iter().map(|(k, a)| (k, a.into())).collect(), resp.refused),
     };
+    // Pick-any asks one primitive per option (`{id}__multi{i}`): keep the first quote per question.
+    let mut quotes = IndexMap::new();
+    for (k, q) in &resp.quotes {
+        let id = k.split_once("__multi").map_or(k.as_str(), |(id, _)| id);
+        quotes.entry(id.to_string()).or_insert_with(|| q.clone());
+    }
     Ok(QuickResult {
+        quotes,
         model: req.model,
         answered_by: resp.model_answered,
         answers,
@@ -250,6 +275,13 @@ pub async fn provider_test(state: State<'_, AppState>, id: String) -> Result<Pro
     decider.test_provider(&id).await
 }
 
+/// The models a provider lists (`GET /v1/models`), to pick from when adding one.
+#[tauri::command]
+pub async fn provider_models(state: State<'_, AppState>, id: String) -> Result<Vec<classifai_core::cloud::RemoteModel>> {
+    let decider = state.decider.clone();
+    decider.provider_models(&id).await
+}
+
 #[tauri::command]
 pub fn cloud_model_save(state: State<'_, AppState>, input: CloudModelInput) -> Result<CloudModelView> {
     state.decider.save_cloud_model(input)
@@ -263,8 +295,9 @@ pub fn cloud_model_delete(state: State<'_, AppState>, id: String) -> Result<()> 
 
 /// Requests, tokens and cost per model since an RFC 3339 time (all time when null).
 #[tauri::command]
-pub fn usage_summary(state: State<'_, AppState>, since: Option<String>) -> Result<Vec<UsageRow>> {
-    state.store.usage_summary(since.as_deref())
+pub async fn usage_summary(state: State<'_, AppState>, since: Option<String>) -> Result<Vec<UsageRow>> {
+    let store = state.store.clone();
+    blocking(move || store.usage_summary(since.as_deref())).await
 }
 
 // ---- datasets -----------------------------------------------------------------------------
@@ -286,13 +319,15 @@ pub async fn dataset_import(state: State<'_, AppState>, path: String, name: Opti
 }
 
 #[tauri::command]
-pub fn dataset_list(state: State<'_, AppState>) -> Result<Vec<Dataset>> {
-    state.store.list_datasets()
+pub async fn dataset_list(state: State<'_, AppState>) -> Result<Vec<Dataset>> {
+    let store = state.store.clone();
+    blocking(move || store.list_datasets()).await
 }
 
 #[tauri::command]
-pub fn dataset_get(state: State<'_, AppState>, id: String) -> Result<Dataset> {
-    state.store.get_dataset(&id)
+pub async fn dataset_get(state: State<'_, AppState>, id: String) -> Result<Dataset> {
+    let store = state.store.clone();
+    blocking(move || store.get_dataset(&id)).await
 }
 
 #[derive(Serialize)]
@@ -341,26 +376,339 @@ pub async fn dataset_import_text(state: State<'_, AppState>, name: String, text:
     .await
 }
 
+/// A new dataset from rows built in the app (e.g. Bulk results of pasted entries).
 #[tauri::command]
-pub fn dataset_value_counts(state: State<'_, AppState>, id: String, column: String) -> Result<Vec<ValueCount>> {
-    state.store.value_counts(&id, &column, 300)
+pub async fn dataset_create(
+    state: State<'_, AppState>,
+    name: String,
+    columns: Vec<String>,
+    rows: Vec<dataset::Row>,
+) -> Result<Dataset> {
+    let store = state.store.clone();
+    blocking(move || {
+        if rows.is_empty() {
+            return Err(Error::invalid("nothing to save: no rows"));
+        }
+        let name = Some(name.trim()).filter(|n| !n.is_empty()).unwrap_or("Untitled");
+        store.insert_dataset(name, None, &dataset::ParsedDataset { columns, rows })
+    })
+    .await
+}
+
+/// A dataset that links to rows of `parent_id` and stores only the added cells:
+/// `rows` are `[parent row index, { column: value }]`.
+#[tauri::command]
+pub async fn dataset_derive(
+    state: State<'_, AppState>,
+    parent_id: String,
+    name: String,
+    source: Option<String>,
+    rows: Vec<(usize, dataset::Row)>,
+) -> Result<Dataset> {
+    let store = state.store.clone();
+    blocking(move || {
+        let name = Some(name.trim()).filter(|n| !n.is_empty()).unwrap_or("Untitled");
+        store.insert_derived_dataset(&parent_id, name, source.as_deref(), &rows)
+    })
+    .await
+}
+
+/// Distinct values of a column: the most frequent `limit` (default 300) and the total count.
+#[tauri::command]
+pub async fn dataset_column_profile(state: State<'_, AppState>, id: String, column: String, limit: Option<usize>) -> Result<ColumnProfile> {
+    let store = state.store.clone();
+    blocking(move || store.column_profile(&id, &column, limit.unwrap_or(300))).await
 }
 
 #[tauri::command]
-pub fn dataset_rename(state: State<'_, AppState>, id: String, name: String) -> Result<()> {
-    state.store.rename_dataset(&id, &name)
+pub async fn dataset_value_counts(state: State<'_, AppState>, id: String, column: String) -> Result<Vec<ValueCount>> {
+    let store = state.store.clone();
+    blocking(move || store.value_counts(&id, &column, 300)).await
 }
 
 #[tauri::command]
-pub fn dataset_delete(state: State<'_, AppState>, id: String) -> Result<()> {
-    state.store.delete_dataset(&id)
+pub async fn dataset_rename(state: State<'_, AppState>, id: String, name: String) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.rename_dataset(&id, &name)).await
+}
+
+#[tauri::command]
+pub async fn dataset_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.delete_dataset(&id)).await
+}
+
+/// Local models currently in memory (empty when the engine is not running).
+#[tauri::command]
+pub async fn models_loaded(state: State<'_, AppState>) -> Result<Vec<String>> {
+    Ok(state.client().loaded().await.unwrap_or_default())
+}
+
+// ---- spreadsheets and files ---------------------------------------------------------------
+
+/// Sheets of a workbook with their first rows, to choose a sheet, header row and columns.
+#[tauri::command]
+pub async fn spreadsheet_inspect(path: String) -> Result<Vec<SheetPreview>> {
+    blocking(move || spreadsheet::inspect(std::path::Path::new(&path))).await
+}
+
+#[tauri::command]
+pub async fn spreadsheet_import(
+    state: State<'_, AppState>,
+    path: String,
+    sheet: String,
+    header_row: usize,
+    columns: Vec<usize>,
+    name: Option<String>,
+) -> Result<Dataset> {
+    let store = state.store.clone();
+    blocking(move || {
+        let p = std::path::Path::new(&path);
+        let parsed = spreadsheet::read_sheet(p, &sheet, header_row, &columns)?;
+        let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "workbook".into());
+        let name = name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| format!("{stem} · {sheet}"));
+        store.insert_dataset(name.trim(), Some(&format!("{path}#{sheet}")), &parsed)
+    })
+    .await
+}
+
+#[derive(Serialize)]
+pub struct FilesImported {
+    dataset: Dataset,
+    skipped: Vec<documents::Skipped>,
+}
+
+/// Text, Word, PDF and image files as one dataset (one row per file). Images are copied into the
+/// app's media folder (`<data dir>/media/<import id>/`).
+#[tauri::command]
+pub async fn files_import(app: AppHandle, state: State<'_, AppState>, paths: Vec<String>, name: Option<String>) -> Result<FilesImported> {
+    let media = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| Error::invalid(e.to_string()))?
+        .join("media")
+        .join(uuid::Uuid::new_v4().to_string());
+    let store = state.store.clone();
+    blocking(move || {
+        let paths: Vec<std::path::PathBuf> = paths.iter().map(Into::into).collect();
+        let r = documents::import_files(&paths, &media)?;
+        let name = name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| format!("Files ({})", r.data.rows.len()));
+        let dataset = store.insert_dataset(name.trim(), Some(&format!("{} files", r.data.rows.len() + r.skipped.len())), &r.data)?;
+        Ok(FilesImported { dataset, skipped: r.skipped })
+    })
+    .await
+}
+
+// ---- manual labelling ---------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn label_session_create(state: State<'_, AppState>, input: LabelSessionInput) -> Result<LabelSessionSummary> {
+    let store = state.store.clone();
+    blocking(move || store.create_label_session(&input)).await
+}
+
+#[tauri::command]
+pub async fn label_sessions_list(state: State<'_, AppState>) -> Result<Vec<LabelSessionSummary>> {
+    let store = state.store.clone();
+    blocking(move || store.list_label_sessions()).await
+}
+
+#[tauri::command]
+pub async fn label_session_get(state: State<'_, AppState>, id: String) -> Result<LabelSession> {
+    let store = state.store.clone();
+    blocking(move || store.get_label_session(&id)).await
+}
+
+#[tauri::command]
+pub async fn label_answer_set(state: State<'_, AppState>, id: String, row_idx: usize, question_id: String, value: Option<serde_json::Value>) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.set_label_answer(&id, row_idx, &question_id, value.as_ref())).await
+}
+
+#[tauri::command]
+pub async fn label_mark_set(state: State<'_, AppState>, id: String, row_idx: usize, mark: LabelMark) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.set_label_mark(&id, row_idx, &mark)).await
+}
+
+#[tauri::command]
+pub async fn label_evidence_set(state: State<'_, AppState>, id: String, row_idx: usize, question_id: String, snippets: Vec<LabelSnippet>) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.set_label_evidence(&id, row_idx, &question_id, &snippets)).await
+}
+
+#[tauri::command]
+pub async fn label_position_set(state: State<'_, AppState>, id: String, position: usize) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.set_label_position(&id, position)).await
+}
+
+#[tauri::command]
+pub fn label_session_update(
+    state: State<'_, AppState>,
+    id: String,
+    name: Option<String>,
+    columns: Option<Vec<String>>,
+    questions: Option<serde_json::Value>,
+    titles: Option<IndexMap<String, String>>,
+) -> Result<()> {
+    let q = questions.as_ref().zip(titles.as_ref());
+    state.store.update_label_session(&id, name.as_deref(), columns.as_deref(), q)
+}
+
+#[tauri::command]
+pub async fn label_session_set_saved(state: State<'_, AppState>, id: String, dataset_id: Option<String>) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.set_label_session_saved(&id, dataset_id.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn label_session_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.delete_label_session(&id)).await
+}
+
+/// Rows at the given indices (missing ones are left out).
+#[tauri::command]
+pub async fn dataset_rows_at(state: State<'_, AppState>, id: String, indices: Vec<usize>) -> Result<Vec<(usize, dataset::Row)>> {
+    let store = state.store.clone();
+    blocking(move || Ok(indices.iter().filter_map(|&i| store.dataset_rows_by_index(&id, &[i]).ok()).flatten().collect())).await
+}
+
+// ---- Hugging Face -------------------------------------------------------------------------
+
+/// The Hugging Face token lives in the OS keychain next to the cloud provider keys.
+const HF_SECRET: &str = "huggingface";
+
+fn hf_client() -> HfClient {
+    HfClient::new(KeychainSecrets.get(HF_SECRET).ok().flatten())
+}
+
+#[tauri::command]
+pub async fn hf_info(dataset: String) -> Result<HfInfo> {
+    hf_client().info(&dataset).await
+}
+
+/// Import the chosen splits as one or more datasets. Progress goes to `hf://progress`.
+#[tauri::command]
+pub async fn hf_import(app: AppHandle, state: State<'_, AppState>, spec: HfImportSpec) -> Result<Vec<Dataset>> {
+    let cancel = state.hf_cancel.clone();
+    cancel.store(false, Ordering::Relaxed);
+    let hf = hf_client();
+    let info = hf.info(&spec.dataset).await?;
+    let tables = hf
+        .import(&spec, &info, |p| {
+            let _ = app.emit("hf://progress", p);
+        }, &cancel)
+        .await?;
+    let store = state.store.clone();
+    blocking(move || tables.iter().map(|t| store.insert_dataset(&t.name, Some(&t.source), &t.data)).collect()).await
+}
+
+#[tauri::command]
+pub fn hf_cancel(state: State<'_, AppState>) {
+    state.hf_cancel.store(true, Ordering::Relaxed);
+}
+
+/// Whether a token is stored, and its last characters.
+#[tauri::command]
+pub fn hf_token_status() -> Result<Option<String>> {
+    Ok(KeychainSecrets.get(HF_SECRET)?.map(|t| format!("…{}", &t[t.len().saturating_sub(4)..])))
+}
+
+/// Store a token; an empty one removes it.
+#[tauri::command]
+pub fn hf_token_set(token: String) -> Result<()> {
+    match token.trim() {
+        "" => KeychainSecrets.delete(HF_SECRET),
+        t => KeychainSecrets.set(HF_SECRET, t),
+    }
+}
+
+// ---- bulk runs ----------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn bulk_run_create(state: State<'_, AppState>, input: BulkRunInput) -> Result<BulkRunSummary> {
+    let store = state.store.clone();
+    blocking(move || store.create_bulk_run(&input)).await
+}
+
+#[tauri::command]
+pub async fn bulk_results_put(state: State<'_, AppState>, id: String, results: Vec<BulkResult>) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.put_bulk_results(&id, &results)).await
+}
+
+#[tauri::command]
+pub async fn bulk_run_finish(state: State<'_, AppState>, id: String, status: String) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.finish_bulk_run(&id, &status)).await
+}
+
+#[tauri::command]
+pub async fn bulk_runs_list(state: State<'_, AppState>) -> Result<Vec<BulkRunSummary>> {
+    let store = state.store.clone();
+    blocking(move || store.list_bulk_runs()).await
+}
+
+#[tauri::command]
+pub async fn bulk_run_get(state: State<'_, AppState>, id: String) -> Result<BulkRun> {
+    let store = state.store.clone();
+    blocking(move || store.get_bulk_run(&id)).await
+}
+
+#[tauri::command]
+pub async fn bulk_run_rename(state: State<'_, AppState>, id: String, name: String) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.rename_bulk_run(&id, &name)).await
+}
+
+#[tauri::command]
+pub async fn bulk_run_set_saved(state: State<'_, AppState>, id: String, dataset_id: Option<String>) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.set_bulk_run_saved(&id, dataset_id.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn bulk_run_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.delete_bulk_run(&id)).await
+}
+
+// ---- UI state -----------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn ui_state_get(state: State<'_, AppState>) -> Result<IndexMap<String, serde_json::Value>> {
+    let store = state.store.clone();
+    blocking(move || store.ui_state()).await
+}
+
+#[tauri::command]
+pub async fn ui_state_set(state: State<'_, AppState>, key: String, value: Option<serde_json::Value>) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.set_ui_state(&key, value.as_ref())).await
 }
 
 // ---- experiments --------------------------------------------------------------------------
 
+/// Save an experiment's predictions as a dataset linked to the experiment's dataset.
 #[tauri::command]
-pub fn experiment_create(state: State<'_, AppState>, config: ExperimentConfig) -> Result<String> {
-    runner::create(&state.store, &config)
+pub async fn experiment_save_as_dataset(state: State<'_, AppState>, id: String, name: String) -> Result<Dataset> {
+    let store = state.store.clone();
+    blocking(move || {
+        let name = match name.trim() {
+            "" => format!("{} results", store.get_experiment(&id)?.name),
+            n => n.to_string(),
+        };
+        store.save_experiment_as_dataset(&id, &name)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn experiment_create(state: State<'_, AppState>, config: ExperimentConfig) -> Result<String> {
+    let store = state.store.clone();
+    blocking(move || runner::create(&store, &config)).await
 }
 
 /// Start (or resume) an experiment in the background. Progress goes to `experiment://progress`.
@@ -393,6 +741,7 @@ pub fn experiment_start(app: AppHandle, state: State<'_, AppState>, id: String) 
                     total: 0,
                     status: ExperimentStatus::Failed,
                     message: Some(e.to_string()),
+                    loading: false,
                 },
             );
         }
@@ -410,13 +759,15 @@ pub fn experiment_cancel(state: State<'_, AppState>, id: String) -> Result<()> {
 }
 
 #[tauri::command]
-pub fn experiment_list(state: State<'_, AppState>, dataset_id: Option<String>) -> Result<Vec<Experiment>> {
-    state.store.list_experiments(dataset_id.as_deref())
+pub async fn experiment_list(state: State<'_, AppState>, dataset_id: Option<String>) -> Result<Vec<Experiment>> {
+    let store = state.store.clone();
+    blocking(move || store.list_experiments(dataset_id.as_deref())).await
 }
 
 #[tauri::command]
-pub fn experiment_get(state: State<'_, AppState>, id: String) -> Result<Experiment> {
-    state.store.get_experiment(&id)
+pub async fn experiment_get(state: State<'_, AppState>, id: String) -> Result<Experiment> {
+    let store = state.store.clone();
+    blocking(move || store.get_experiment(&id)).await
 }
 
 /// Metrics for one question (default: the first), with ground truth re-read from the dataset and
@@ -515,14 +866,16 @@ pub async fn experiment_export_report(state: State<'_, AppState>, id: String, pa
 
 /// Requests, tokens and cost per model of one experiment.
 #[tauri::command]
-pub fn experiment_usage(state: State<'_, AppState>, id: String) -> Result<Vec<UsageRow>> {
-    state.store.experiment_usage(&id)
+pub async fn experiment_usage(state: State<'_, AppState>, id: String) -> Result<Vec<UsageRow>> {
+    let store = state.store.clone();
+    blocking(move || store.experiment_usage(&id)).await
 }
 
 #[tauri::command]
-pub fn experiment_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+pub async fn experiment_delete(state: State<'_, AppState>, id: String) -> Result<()> {
     experiment_cancel(state.clone(), id.clone())?;
-    state.store.delete_experiment(&id)
+    let store = state.store.clone();
+    blocking(move || store.delete_experiment(&id)).await
 }
 
 /// One line per experiment row; per question `{q}:ground_truth` (with label corrections) and per
@@ -553,55 +906,64 @@ pub fn label_correction_set(
 }
 
 #[tauri::command]
-pub fn label_correction_clear(state: State<'_, AppState>, dataset_id: String, row_idx: usize, column: String) -> Result<()> {
-    state.store.clear_label_correction(&dataset_id, row_idx, &column)
+pub async fn label_correction_clear(state: State<'_, AppState>, dataset_id: String, row_idx: usize, column: String) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.clear_label_correction(&dataset_id, row_idx, &column)).await
 }
 
 #[tauri::command]
-pub fn label_corrections_list(state: State<'_, AppState>, dataset_id: String) -> Result<Vec<LabelCorrection>> {
-    state.store.label_corrections(&dataset_id)
+pub async fn label_corrections_list(state: State<'_, AppState>, dataset_id: String) -> Result<Vec<LabelCorrection>> {
+    let store = state.store.clone();
+    blocking(move || store.label_corrections(&dataset_id)).await
 }
 
 // ---- question sets ------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn question_sets_list(state: State<'_, AppState>) -> Result<Vec<QuestionSetSummary>> {
-    state.store.list_question_sets()
+pub async fn question_sets_list(state: State<'_, AppState>) -> Result<Vec<QuestionSetSummary>> {
+    let store = state.store.clone();
+    blocking(move || store.list_question_sets()).await
 }
 
 /// One version of a set (latest when `version` is null).
 #[tauri::command]
-pub fn question_set_get(state: State<'_, AppState>, id: String, version: Option<u32>) -> Result<QuestionSet> {
-    state.store.get_question_set(&id, version)
+pub async fn question_set_get(state: State<'_, AppState>, id: String, version: Option<u32>) -> Result<QuestionSet> {
+    let store = state.store.clone();
+    blocking(move || store.get_question_set(&id, version)).await
 }
 
 /// Create a set (`id` null) or save a new version (only when the payload changed).
 #[tauri::command]
-pub fn question_set_save(state: State<'_, AppState>, input: QuestionSetInput) -> Result<QuestionSetSummary> {
-    state.store.save_question_set(&input)
+pub async fn question_set_save(state: State<'_, AppState>, input: QuestionSetInput) -> Result<QuestionSetSummary> {
+    let store = state.store.clone();
+    blocking(move || store.save_question_set(&input)).await
 }
 
 #[tauri::command]
-pub fn question_set_delete(state: State<'_, AppState>, id: String) -> Result<()> {
-    state.store.delete_question_set(&id)
+pub async fn question_set_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    let store = state.store.clone();
+    blocking(move || store.delete_question_set(&id)).await
 }
 
 // ---- settings, budget, track record -------------------------------------------------------
 
 #[tauri::command]
-pub fn settings_get(state: State<'_, AppState>) -> Result<AppSettings> {
-    state.store.settings()
+pub async fn settings_get(state: State<'_, AppState>) -> Result<AppSettings> {
+    let store = state.store.clone();
+    blocking(move || store.settings()).await
 }
 
 #[tauri::command]
-pub fn settings_save(state: State<'_, AppState>, input: AppSettings) -> Result<AppSettings> {
-    state.store.save_settings(&input)
+pub async fn settings_save(state: State<'_, AppState>, input: AppSettings) -> Result<AppSettings> {
+    let store = state.store.clone();
+    blocking(move || store.save_settings(&input)).await
 }
 
 /// Cloud spend this calendar month (local time) against the monthly budget.
 #[tauri::command]
-pub fn budget_status(state: State<'_, AppState>) -> Result<BudgetStatus> {
-    state.store.budget_status()
+pub async fn budget_status(state: State<'_, AppState>) -> Result<BudgetStatus> {
+    let store = state.store.clone();
+    blocking(move || store.budget_status()).await
 }
 
 /// Each model's best question result across completed experiments, best first.

@@ -22,7 +22,7 @@
         "hiddenTitle": true,
         "trafficLightPosition": {
           "x": 18,
-          "y": 20
+          "y": 27.5
         },
         "transparent": true,
         "windowEffects": {
@@ -34,7 +34,13 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/media/**"
+        ]
+      }
     },
     "macOSPrivateApi": true
   },

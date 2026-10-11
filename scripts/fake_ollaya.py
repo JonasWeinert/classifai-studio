@@ -10,6 +10,13 @@ It also fakes the cloud providers, so their base URLs can point here:
     POST /v1/systemone                                         TypeSafe System One (typesafe, custom)
     POST /v1/decisions                                         OpenAI Decisions (needs a Bearer key)
     POST /client/v4/accounts/<acct>/ai/run/@cf/cloudflare/<m>  Workers AI, wrapped in {result, success}
+    POST /v1/chat/completions                                  an LLM with JSON-schema structured output
+    POST /v1/messages                                          an Anthropic LLM (forced tool call, needs x-api-key)
+    GET  /v1/models                                            model lists (OpenRouter-style; Anthropic-style with ?limit=)
+
+The LLMs fill the answer schema they are sent: the option named in the input gets 0.8, a
+statement 0.9 when the input says "spam" or "win", an open question "Fake answer.". The chat
+model "json-only" rejects json_schema (400) to exercise the JSON-mode fallback.
 
 Every cloud request reports usage {input_tokens: 10, output_tokens: 0}. An OpenAI question whose
 instructions contain "[refuse]" gets a refusal.
@@ -67,6 +74,26 @@ def openai_answer(q, state):
             "probabilities": [{"value": int(i), "label": a["legend"][i], "probability": p} for i, p in a["probabilities"].items()]}
 
 
+def llm_fill(schema, prompt):
+    """Answers for an LLM answer schema, from the <input> of the prompt."""
+    raw = prompt.split("<input>", 1)[-1].split("</input>", 1)[0].strip()
+    text = raw.lower()
+    out = {}
+    for qid, q in schema.get("properties", {}).items():
+        props = q.get("properties", {})
+        if "probabilities" in props:
+            keys = props["probabilities"]["required"]
+            hit = next((k for k in keys if k.lower() in text), keys[0])
+            out[qid] = {"probabilities": {k: (0.8 if k == hit else round(0.2 / max(1, len(keys) - 1), 4)) for k in keys}}
+        elif "probability_true" in props:
+            out[qid] = {"probability_true": 0.9 if "spam" in text or "win" in text else 0.1}
+        else:
+            out[qid] = {"answer": "Fake answer."}
+        # A verbatim quote: the input's first three words (with different spacing, as models do).
+        out[qid]["quote"] = "  ".join(raw.split()[:3]) if "quote" in props else ""
+    return out
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -88,6 +115,15 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if self.path.startswith("/v1/models"):
+            if "limit=" in self.path:  # Anthropic
+                if not self.headers.get("x-api-key"):
+                    return self._json(401, {"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}})
+                return self._json(200, {"data": [{"id": "claude-haiku-4-5-20251001", "display_name": "Claude Haiku 4.5", "type": "model"}], "has_more": False})
+            return self._json(200, {"object": "list", "data": [
+                {"id": "fake-llm", "object": "model", "name": "Fake LLM", "context_length": 8192,
+                 "pricing": {"prompt": "0.000001", "completion": "0.000002"}, "supported_parameters": ["structured_outputs"]},
+                {"id": "json-only", "object": "model"}]})
         if self.path == "/":
             data = b"Ollaya is running"
             self.send_response(200)
@@ -134,6 +170,27 @@ class H(BaseHTTPRequestHandler):
             if model not in ("clef", "clef-flash") or b.get("model") != model:
                 return self._json(400, {"result": None, "success": False, "errors": [{"code": 5007, "message": f"No such model {model}"}], "messages": []})
             self._json(200, {"result": systemone(b), "success": True, "errors": [], "messages": []})
+        elif self.path == "/v1/chat/completions":
+            fmt = b.get("response_format") or {}
+            user = b["messages"][-1]["content"]
+            if fmt.get("type") == "json_schema":
+                if b.get("model") == "json-only":
+                    return self._json(400, {"error": {"message": "response_format json_schema is not supported", "type": "invalid_request_error"}})
+                schema = fmt["json_schema"]["schema"]
+            else:
+                schema = json.loads(user.rsplit("JSON schema, and nothing else:\n", 1)[1])
+            content = json.dumps(llm_fill(schema, user))
+            if fmt.get("type") != "json_schema":
+                content = "```json\n" + content + "\n```"
+            self._json(200, {"id": "chat_fake", "model": b.get("model", ""), "choices": [{"index": 0, "message": {"role": "assistant", "content": content}}],
+                             "usage": {"prompt_tokens": 100, "completion_tokens": 20}})
+        elif self.path == "/v1/messages":
+            if not self.headers.get("x-api-key") or not self.headers.get("anthropic-version"):
+                return self._json(401, {"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}})
+            tool = b["tools"][0]
+            self._json(200, {"id": "msg_fake", "model": b.get("model", ""), "type": "message", "role": "assistant", "stop_reason": "tool_use",
+                             "content": [{"type": "tool_use", "id": "toolu_fake", "name": tool["name"], "input": llm_fill(tool["input_schema"], b["messages"][-1]["content"])}],
+                             "usage": {"input_tokens": 120, "output_tokens": 30}})
         elif self.path == "/api/pull":
             name = b["model"] if ":" in b["model"] else b["model"] + ":latest"
             self.send_response(200)

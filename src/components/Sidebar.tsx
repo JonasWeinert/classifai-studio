@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { Boxes, Database, Rows3, FlaskConical, Search, SlidersHorizontal, Zap } from "lucide-react";
+import { Boxes, Database, Layers, Tag, Rows3, FlaskConical, Search, SlidersHorizontal, Zap } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useApp, type Route } from "../lib/app";
 import { usd } from "../lib/format";
@@ -8,12 +8,22 @@ type Item = { page: Route["page"]; label: string; icon: ReactNode; match: Route[
 
 const SECTIONS: { title: string; items: Item[] }[] = [
   {
-    title: "Classify",
+    title: "AI Classification",
     items: [
       { page: "quick", label: "Playground", icon: <Zap />, match: ["quick"] },
-      { page: "bulk", label: "Bulk", icon: <Rows3 />, match: ["bulk"] },
+      { page: "bulk", label: "Bulk", icon: <Rows3 />, match: ["bulk", "bulk-new", "bulk-run"] },
+      { page: "experiments", label: "Evaluations", icon: <FlaskConical />, match: ["experiments", "experiment", "new-experiment", "compare", "review"] },
+    ],
+  },
+  {
+    title: "Manual",
+    items: [{ page: "labelling", label: "Manual labelling", icon: <Tag />, match: ["labelling", "label-new", "label"] }],
+  },
+  {
+    title: "Resources",
+    items: [
+      { page: "question-sets", label: "Question sets", icon: <Layers />, match: ["question-sets", "question-set"] },
       { page: "datasets", label: "Datasets", icon: <Database />, match: ["datasets", "dataset"] },
-      { page: "experiments", label: "Experiments", icon: <FlaskConical />, match: ["experiments", "experiment", "new-experiment", "compare", "review"] },
     ],
   },
   {

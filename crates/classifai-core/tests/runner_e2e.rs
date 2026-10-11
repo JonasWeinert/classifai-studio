@@ -17,7 +17,7 @@ use classifai_core::ollaya::Client;
 use classifai_core::runner;
 use classifai_core::secrets::MemorySecrets;
 use classifai_core::store::{ExperimentConfig, ExperimentStatus, Store};
-use classifai_core::task::{LabelSpec, TaskKind, TaskSpec};
+use classifai_core::task::{LabelSpec, TaskKind, TaskRoute, TaskSpec};
 
 #[tokio::test]
 #[ignore]
@@ -54,6 +54,7 @@ async fn experiment_runs_and_scores() {
                 labels: labels(&["billing", "technical", "account"]),
                 positive_label: None,
                 threshold: None,
+                when: None,
             },
             TaskSpec {
                 id: "refund".into(),
@@ -64,6 +65,7 @@ async fn experiment_runs_and_scores() {
                 labels: labels(&["yes", "no"]),
                 positive_label: Some("yes".into()),
                 threshold: None,
+                when: None,
             },
         ],
         models: vec!["laya".into(), "missing-model".into()],
@@ -131,4 +133,70 @@ async fn experiment_runs_and_scores() {
 
 fn base_url() -> String {
     std::env::var("CLASSIFAI_TEST_OLLAYA").unwrap_or_else(|_| "http://127.0.0.1:11999".into())
+}
+
+/// Follow-ups: `team` is asked only for rows where `refund` is predicted "no", in a second pass.
+#[tokio::test]
+#[ignore]
+async fn follow_ups_run_only_when_triggered() {
+    let client = Client::new(base_url());
+    assert!(client.is_alive().await, "no Ollaya-compatible server reachable");
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    let decider = Arc::new(Decider::new(client, store.clone(), Arc::new(MemorySecrets::new())));
+    let csv = "text,label,refund\n\
+        Please refund the billing error so I win my money back,billing,yes\n\
+        The app shows a technical error,technical,no\n\
+        I cannot log into my account,account,no\n";
+    let d = store.insert_dataset("tickets", None, &parse_delimited(csv, b',').unwrap()).unwrap();
+    let labels = |vs: &[&str]| vs.iter().map(|v| LabelSpec { value: v.to_string(), description: None, aliases: vec![] }).collect();
+    let config = ExperimentConfig {
+        name: "routing".into(),
+        dataset_id: d.id,
+        input_columns: vec!["text".into()],
+        context: None,
+        tasks: vec![
+            TaskSpec {
+                id: "refund".into(),
+                kind: TaskKind::Binary,
+                instructions: "The customer asks for money back.".into(),
+                context: None,
+                label_column: "refund".into(),
+                labels: labels(&["yes", "no"]),
+                positive_label: Some("yes".into()),
+                threshold: None,
+                when: None,
+            },
+            TaskSpec {
+                id: "team".into(),
+                kind: TaskKind::Choice,
+                instructions: "Which team should handle this?".into(),
+                context: None,
+                label_column: "label".into(),
+                labels: labels(&["billing", "technical", "account"]),
+                positive_label: None,
+                threshold: None,
+                when: Some(TaskRoute { parent: "refund".into(), answers: vec!["no".into()] }),
+            },
+        ],
+        models: vec!["laya".into()],
+        sample_size: None,
+        concurrency: Some(1),
+    };
+    let id = runner::create(&store, &config).unwrap();
+    runner::execute(store.clone(), decider, id.clone(), Arc::new(AtomicBool::new(false)), |_| {}).await.unwrap();
+    let refund = store.predictions_for(&id, "refund").unwrap();
+    let team = store.predictions_for(&id, "team").unwrap();
+    assert_eq!((refund.len(), team.len()), (3, 3));
+    for r in &refund {
+        let t = team.iter().find(|t| t.row_idx == r.row_idx).unwrap();
+        if r.predicted.as_deref() == Some("no") {
+            assert!(t.predicted.is_some(), "row {}: triggered follow-up was asked", r.row_idx);
+        } else {
+            assert!(t.error.as_deref().is_some_and(|e| e.starts_with("not asked")), "row {}: {:?}", r.row_idx, t.error);
+        }
+    }
+    // An invalid route is refused up front.
+    let mut bad = config.clone();
+    bad.tasks[1].when = Some(TaskRoute { parent: "refund".into(), answers: vec!["maybe".into()] });
+    assert!(runner::create(&store, &bad).is_err());
 }

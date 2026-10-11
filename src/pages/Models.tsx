@@ -1,11 +1,13 @@
 import { cn } from "@/lib/utils";
-import { Check, Cloud, Cpu, Download, ExternalLink, KeyRound, Plus, RotateCcw, Star, Trash2 } from "lucide-react";
+import { Check, Cpu, Download, ExternalLink, KeyRound, Plus, RotateCcw, Star, Trash2 } from "lucide-react";
+import { ModelIcon, ProviderIcon } from "../components/ProviderLogo";
 import { useEffect, useMemo, useState } from "react";
-import { Badge, Button, ErrorNote, FormRow, Input, Modal, PageHeader, Progress, Section, Segmented, Spinner, Switch, Tooltip } from "../components/ui";
+import { Badge, Button, ErrorNote, FormRow, Input, Modal, PageHeader, Progress, SearchField, Section, Segmented, Spinner, Switch, Tooltip } from "../components/ui";
 import { api, errorMessage, openExternal } from "../lib/api";
 import { useApp, useAsync } from "../lib/app";
 import { bytes, shortModel, tokens, usd } from "../lib/format";
-import type { CloudModel, Provider, ProviderKind, TrackRecord } from "../lib/types";
+import type { CloudModel, Provider, ProviderKind, RemoteModel, TrackRecord } from "../lib/types";
+import { isConnected, isLlmKind } from "../lib/models";
 
 type Tab = "local" | "cloud" | "usage";
 
@@ -17,7 +19,7 @@ export function Models() {
     <>
       <PageHeader
         title="Models"
-        subtitle="Decision models read a text plus typed questions and return calibrated probabilities."
+        subtitle="Decision models and LLMs read a text plus typed questions and return probabilities."
         actions={
           <Segmented
             value={tab}
@@ -144,7 +146,7 @@ function LocalModels() {
         }
       >
         {catalog.loading && <Spinner />}
-        <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3">
           {catalog.data?.map((c) => {
             const have = isInstalled(c.name);
             const p = pulls[c.name];
@@ -204,28 +206,72 @@ const PROVIDER_INFO: Record<ProviderKind, { blurb: string; keyUrl?: string; keyL
   openai: { blurb: "OpenAI's Decisions API: predicates, choices and scores with probabilities.", keyUrl: "https://platform.openai.com/api-keys", keyLabel: "OpenAI API key" },
   cloudflare: { blurb: "Clef and Clef-Flash on Workers AI, billed to your Cloudflare account.", keyUrl: "https://dash.cloudflare.com/profile/api-tokens", keyLabel: "API token (Workers AI)", needsAccount: true },
   custom: { blurb: "Any TypeSafe-compatible endpoint: OpenRouter, Vercel AI Gateway, a remote Ollaya…", keyLabel: "API key (optional)" },
+  anthropic: { blurb: "Claude models, answering through a structured tool call.", keyUrl: "https://console.anthropic.com/settings/keys", keyLabel: "Anthropic API key" },
+  chat: { blurb: "An OpenAI-compatible chat API, answering through a JSON schema.", keyLabel: "API key (optional for local servers)" },
 };
+
+/** Ready-made OpenAI-compatible LLM endpoints for "Add LLM provider". */
+const CHAT_PRESETS: { name: string; url: string; hint: string; keyUrl?: string }[] = [
+  { name: "OpenRouter", url: "https://openrouter.ai/api", hint: "Hundreds of models behind one key", keyUrl: "https://openrouter.ai/settings/keys" },
+  { name: "Ollama", url: "http://localhost:11434", hint: "Open models on this Mac, no key" },
+  { name: "LM Studio", url: "http://localhost:1234", hint: "Open models on this Mac, no key" },
+  { name: "Groq", url: "https://api.groq.com/openai", hint: "Very fast open models", keyUrl: "https://console.groq.com/keys" },
+  { name: "Other", url: "", hint: "Any server with /v1/chat/completions" },
+];
+
+type Editing = Provider | { add: ProviderKind } | null;
 
 function CloudProviders() {
   const { providers, refreshProviders } = useApp();
-  const [editing, setEditing] = useState<Provider | "new" | null>(null);
+  const [editing, setEditing] = useState<Editing>(null);
   const [addingModel, setAddingModel] = useState<Provider | null>(null);
+  const decision = providers.filter((p) => !isLlmKind(p.kind));
+  const llms = providers.filter((p) => isLlmKind(p.kind));
 
   return (
     <>
-      <div className="mb-6 flex items-center justify-between gap-4 rounded-[12px] bg-card px-4 py-3 text-[12.5px] text-muted-foreground">
-        <span>
-          Cloud models are used like local ones — in Playground and experiments. Requests send the input text to the provider. Keys are stored in your macOS Keychain.
-        </span>
-        <Button size="sm" icon={<Plus className="size-3" />} onClick={() => setEditing("new")}>
-          Custom endpoint
-        </Button>
+      <div className="mb-6 rounded-[12px] bg-card px-4 py-3 text-[12.5px] text-muted-foreground">
+        Cloud models are used like local ones — in Playground, Bulk and evaluations. Requests send the input text to the provider. Keys are stored in your macOS Keychain.
       </div>
 
       {providers.length === 0 && <Spinner />}
-      {providers.map((p) => (
-        <ProviderBlock key={p.id} p={p} onEdit={() => setEditing(p)} onAddModel={() => setAddingModel(p)} onChanged={refreshProviders} />
-      ))}
+      {providers.length > 0 && (
+        <>
+          <GroupHeader
+            title="Decision models"
+            blurb="Built to classify: they read the input and return probabilities from the model itself, usually well calibrated. They can't write free text."
+            action={
+              <Button size="sm" variant="ghost" icon={<Plus className="size-3" />} onClick={() => setEditing({ add: "custom" })}>
+                Custom endpoint
+              </Button>
+            }
+          />
+          {decision.map((p) => (
+            <ProviderBlock key={p.id} p={p} onEdit={() => setEditing(p)} onAddModel={() => setAddingModel(p)} onChanged={refreshProviders} />
+          ))}
+          <GroupHeader
+            title={
+              <span className="flex items-center gap-2">
+                LLMs <Badge tone="accent">structured output</Badge>
+              </span>
+            }
+            blurb={
+              <>
+                Large language models answer the same questions by filling a JSON schema, and also answer <b className="font-medium text-foreground">free-text</b> questions. Their probabilities are the
+                model's own estimates, so they tend to be less calibrated than a decision model's — an evaluation shows how far to trust them. Slower and usually pricier per entry.
+              </>
+            }
+            action={
+              <Button size="sm" variant="ghost" icon={<Plus className="size-3" />} onClick={() => setEditing({ add: "chat" })}>
+                LLM provider
+              </Button>
+            }
+          />
+          {llms.map((p) => (
+            <ProviderBlock key={p.id} p={p} onEdit={() => setEditing(p)} onAddModel={() => setAddingModel(p)} onChanged={refreshProviders} />
+          ))}
+        </>
+      )}
 
       <ProviderSheet provider={editing} onClose={() => setEditing(null)} onSaved={refreshProviders} />
       <AddModelSheet provider={addingModel} onClose={() => setAddingModel(null)} onSaved={refreshProviders} />
@@ -233,10 +279,23 @@ function CloudProviders() {
   );
 }
 
+/** "Decision models" / "LLMs" above their providers. */
+function GroupHeader({ title, blurb, action }: { title: React.ReactNode; blurb: React.ReactNode; action?: React.ReactNode }) {
+  return (
+    <div className="mt-2 mb-4 flex items-end justify-between gap-6 border-b border-border pb-2 first:mt-0">
+      <div>
+        <div className="text-[15px] font-semibold tracking-[-0.01em]">{title}</div>
+        <div className="mt-0.5 max-w-[46rem] text-[12.5px] leading-relaxed text-muted-foreground">{blurb}</div>
+      </div>
+      {action}
+    </div>
+  );
+}
+
 function ProviderBlock({ p, onEdit, onAddModel, onChanged }: { p: Provider; onEdit: () => void; onAddModel: () => void; onChanged: () => void }) {
   const { toast } = useApp();
   const info = PROVIDER_INFO[p.kind];
-  const ready = p.has_key || p.kind === "custom";
+  const ready = isConnected(p);
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<{ ok: boolean; message: string } | null>(null);
 
@@ -255,7 +314,7 @@ function ProviderBlock({ p, onEdit, onAddModel, onChanged }: { p: Provider; onEd
     <Section
       title={
         <span className="flex items-center gap-2">
-          <Cloud className="size-4 text-faint" />
+          <ProviderIcon p={p} className="size-4 text-muted-foreground" />
           {p.name}
           {ready ? (
             <Badge tone="good">
@@ -388,11 +447,12 @@ function PriceField({ label, value, onChange, onCommit }: { label: string; value
   );
 }
 
-function ProviderSheet({ provider, onClose, onSaved }: { provider: Provider | "new" | null; onClose: () => void; onSaved: () => void }) {
+function ProviderSheet({ provider, onClose, onSaved }: { provider: Editing; onClose: () => void; onSaved: () => void }) {
   const { toast } = useApp();
-  const isNew = provider === "new";
-  const p = isNew ? null : provider;
-  const kind: ProviderKind = p?.kind ?? "custom";
+  const isNew = !!provider && "add" in provider;
+  const p = provider && !("add" in provider) ? provider : null;
+  const kind: ProviderKind = p?.kind ?? (provider && "add" in provider ? provider.add : "custom");
+  const [preset, setPreset] = useState<string | null>(null);
   const info = PROVIDER_INFO[kind];
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -407,6 +467,7 @@ function ProviderSheet({ provider, onClose, onSaved }: { provider: Provider | "n
     setAccount(p?.account_id ?? "");
     setKey("");
     setError(null);
+    setPreset(null);
   }, [provider, p]);
 
   const save = async (removeKey = false) => {
@@ -416,7 +477,7 @@ function ProviderSheet({ provider, onClose, onSaved }: { provider: Provider | "n
       await api.providerSave({
         id: p?.id ?? null,
         kind,
-        name: name.trim() || p?.name || "Custom endpoint",
+        name: name.trim() || p?.name || (kind === "chat" ? "LLM endpoint" : "Custom endpoint"),
         base_url: baseUrl.trim() || null,
         account_id: account.trim() || null,
         api_key: removeKey ? "" : key.trim() || null,
@@ -431,14 +492,20 @@ function ProviderSheet({ provider, onClose, onSaved }: { provider: Provider | "n
     }
   };
 
-  const canSave = kind === "custom" ? !!baseUrl.trim() && !!name.trim() : !!key.trim() || (!!p?.has_key && (!info.needsAccount || !!account.trim()));
+  const canSave =
+    kind === "custom" || (kind === "chat" && (isNew || !p?.builtin))
+      ? !!baseUrl.trim() && !!name.trim()
+      : kind === "chat"
+        ? true
+        : !!key.trim() || (!!p?.has_key && (!info.needsAccount || !!account.trim()));
+  const keyUrl = CHAT_PRESETS.find((x) => x.name === preset)?.keyUrl ?? info.keyUrl;
 
   return (
     <Modal
       open={provider !== null}
       onClose={onClose}
       width={460}
-      title={isNew ? "Add a TypeSafe-compatible endpoint" : `Connect ${p?.name}`}
+      title={isNew ? (kind === "chat" ? "Add an LLM provider" : "Add a TypeSafe-compatible endpoint") : `Connect ${p?.name}`}
       footer={
         <>
           {p?.has_key && (
@@ -453,7 +520,41 @@ function ProviderSheet({ provider, onClose, onSaved }: { provider: Provider | "n
         </>
       }
     >
+      {isNew && kind === "chat" && (
+        <div className="mb-3">
+          <div className="mb-1.5 text-[12px] text-muted-foreground">Any server that speaks OpenAI's chat API and supports JSON output works.</div>
+          <div className="grid grid-cols-2 gap-1.5">
+            {CHAT_PRESETS.map((x) => (
+              <button
+                key={x.name}
+                onClick={() => {
+                  setPreset(x.name);
+                  if (x.name !== "Other") setName(x.name);
+                  setBaseUrl(x.url);
+                }}
+                className={cn("rounded-[10px] px-3 py-2 text-left transition-colors", preset === x.name ? "bg-primary text-primary-foreground" : "bg-sel hover:bg-sel/70")}
+              >
+                <div className="flex items-center gap-1.5 text-[12.5px] font-medium">
+                  {x.name !== "Other" && <ProviderIcon p={{ kind: "custom", base_url: x.url }} className="size-3.5" />}
+                  {x.name}
+                </div>
+                <div className={cn("text-[11px]", preset === x.name ? "text-primary-foreground/80" : "text-faint")}>{x.hint}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="-ml-3 space-y-0.5">
+        {kind === "chat" && (isNew || !p?.builtin) && (
+          <>
+            <FormRow label="Name:" labelWidth={110}>
+              <Input value={name} onChange={setName} placeholder="OpenRouter" />
+            </FormRow>
+            <FormRow label="Base URL:" labelWidth={110} hint="ClassifAI calls {base}/v1/chat/completions.">
+              <Input mono value={baseUrl} onChange={setBaseUrl} placeholder="https://openrouter.ai/api" />
+            </FormRow>
+          </>
+        )}
         {kind === "custom" && (
           <>
             <FormRow label="Name:" labelWidth={110}>
@@ -475,15 +576,15 @@ function ProviderSheet({ provider, onClose, onSaved }: { provider: Provider | "n
           hint={
             <>
               {p?.has_key ? `A key ending ${p.key_hint} is saved. Leave empty to keep it.` : "Stored in your macOS Keychain, never in the project database."}
-              {info.keyUrl && (
-                <button className="ml-1 text-primary hover:underline" onClick={() => openExternal(info.keyUrl!)}>
+              {keyUrl && (
+                <button className="ml-1 text-primary hover:underline" onClick={() => openExternal(keyUrl)}>
                   Get a key ↗
                 </button>
               )}
             </>
           }
         >
-          <Input type="password" value={key} onChange={setKey} placeholder={info.keyLabel} autoFocus />
+          <Input type="password" value={key} onChange={setKey} placeholder={info.keyLabel} autoFocus={!isNew} />
         </FormRow>
       </div>
       {error && (
@@ -495,19 +596,64 @@ function ProviderSheet({ provider, onClose, onSaved }: { provider: Provider | "n
   );
 }
 
+/** Most listed models drawn at once; the search narrows the rest. */
+const LIST_LIMIT = 200;
+
+/**
+ * Add a model: search the provider's own model list (name, id, description) and pick one — its
+ * name, display name and published prices fill in. Providers without a list (or offline ones)
+ * fall back to typing the model name.
+ */
 function AddModelSheet({ provider, onClose, onSaved }: { provider: Provider | null; onClose: () => void; onSaved: () => void }) {
   const [model, setModel] = useState("");
   const [display, setDisplay] = useState("");
   const [inPrice, setIn] = useState("0");
   const [outPrice, setOut] = useState("0");
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [manual, setManual] = useState(false);
+  const [list, setList] = useState<{ loading: boolean; models: RemoteModel[]; error: string | null }>({ loading: false, models: [], error: null });
+  const llm = !!provider && isLlmKind(provider.kind);
+
   useEffect(() => {
     setModel("");
     setDisplay("");
     setIn("0");
     setOut("0");
     setError(null);
+    setQuery("");
+    setManual(provider?.kind === "cloudflare");
+    if (!provider || provider.kind === "cloudflare") return setList({ loading: false, models: [], error: null });
+    setList({ loading: true, models: [], error: null });
+    let live = true;
+    api
+      .providerModels(provider.id)
+      .then((models) => live && setList({ loading: false, models, error: null }))
+      .catch((e) => {
+        if (!live) return;
+        setList({ loading: false, models: [], error: errorMessage(e) });
+        setManual(true);
+      });
+    return () => {
+      live = false;
+    };
   }, [provider]);
+
+  const added = new Set(provider?.models.map((m) => m.model) ?? []);
+  const hits = useMemo(() => {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+    return list.models.filter((m) => {
+      const hay = `${m.id} ${m.name} ${m.description ?? ""}`.toLowerCase();
+      return words.every((w) => hay.includes(w));
+    });
+  }, [list.models, query]);
+
+  const pick = (m: RemoteModel) => {
+    setModel(m.id);
+    setDisplay(m.name !== m.id ? m.name.replace(/^[^:]{1,30}:\s*/, "") : "");
+    if (m.input_price_per_mtok != null) setIn(String(m.input_price_per_mtok));
+    if (m.output_price_per_mtok != null) setOut(String(m.output_price_per_mtok));
+  };
 
   const save = async () => {
     if (!provider) return;
@@ -520,34 +666,112 @@ function AddModelSheet({ provider, onClose, onSaved }: { provider: Provider | nu
     }
   };
 
+  const chosen = list.models.find((m) => m.id === model);
+  const searching = !manual && !list.error;
+
   return (
     <Modal
       open={provider !== null}
       onClose={onClose}
+      width={searching ? 560 : undefined}
       title={`Add a model to ${provider?.name ?? ""}`}
       footer={
         <>
+          {list.models.length > 0 && (
+            <Button variant="ghost" className="mr-auto" onClick={() => setManual(!manual)}>
+              {manual ? "Search the list" : "Enter a name instead"}
+            </Button>
+          )}
           <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!model.trim()} onClick={save}>
-            Add
+          <Button variant="primary" disabled={!model.trim() || added.has(model.trim())} onClick={save}>
+            {added.has(model.trim()) ? "Already added" : "Add"}
           </Button>
         </>
       }
     >
-      <div className="-ml-3 space-y-0.5">
-        <FormRow label="Model name:" labelWidth={120} hint="Exactly as the provider expects it in requests.">
-          <Input mono value={model} onChange={setModel} placeholder="jev-latest" autoFocus />
-        </FormRow>
-        <FormRow label="Display name:" labelWidth={120}>
-          <Input value={display} onChange={setDisplay} placeholder="optional" />
-        </FormRow>
-        <FormRow label="Input price:" labelWidth={120} hint="USD per 1M tokens, used for cost monitoring.">
-          <Input mono className="max-w-[8rem]" value={inPrice} onChange={setIn} />
-        </FormRow>
-        <FormRow label="Output price:" labelWidth={120}>
-          <Input mono className="max-w-[8rem]" value={outPrice} onChange={setOut} />
-        </FormRow>
-      </div>
+      {searching && (
+        <div className="mb-3">
+          <SearchField className="w-full" value={query} onChange={setQuery} placeholder={list.loading ? "Loading models…" : `Search ${list.models.length.toLocaleString()} models`} />
+          <div className="mt-2 max-h-[300px] min-h-[120px] overflow-y-auto rounded-[10px] border border-border">
+            {list.loading ? (
+              <div className="grid min-h-[118px] place-items-center">
+                <Spinner />
+              </div>
+            ) : hits.length === 0 ? (
+              <div className="grid min-h-[118px] place-items-center px-6 text-center text-[12.5px] text-muted-foreground">{list.models.length ? `No model matches “${query}”.` : "This provider lists no models."}</div>
+            ) : (
+              <>
+                {hits.slice(0, LIST_LIMIT).map((m) => {
+                  const on = m.id === model;
+                  const has = added.has(m.id);
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => pick(m)}
+                      disabled={has}
+                      className={cn("flex w-full items-start gap-3 border-b border-border/60 px-3 py-2 text-left last:border-0", on ? "bg-primary/10" : "hover:bg-sel", has && "opacity-50")}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-baseline gap-2">
+                          <span className="truncate text-[13px] font-medium">{m.name}</span>
+                          {m.name !== m.id && <span className="truncate font-mono text-[11px] text-faint">{m.id}</span>}
+                        </span>
+                        {m.description && <span className="mt-0.5 line-clamp-1 block text-[11.5px] text-muted-foreground">{m.description}</span>}
+                      </span>
+                      <span className="flex shrink-0 flex-col items-end gap-0.5 text-[11px] text-faint">
+                        {has ? (
+                          <span>added</span>
+                        ) : m.input_price_per_mtok != null ? (
+                          <span className="font-mono tnum">
+                            ${m.input_price_per_mtok} / ${m.output_price_per_mtok ?? 0}
+                          </span>
+                        ) : null}
+                        {llm && m.structured_output === false && <span className="text-warn" title="The provider says this model doesn't support JSON-schema output; answers may fail">no JSON schema</span>}
+                        {m.context_length ? <span className="tnum">{m.context_length >= 1000 ? `${Math.round(m.context_length / 1000)}k` : m.context_length} ctx</span> : null}
+                      </span>
+                    </button>
+                  );
+                })}
+                {hits.length > LIST_LIMIT && <div className="px-3 py-2 text-[11.5px] text-faint">{(hits.length - LIST_LIMIT).toLocaleString()} more — search to narrow down.</div>}
+              </>
+            )}
+          </div>
+          {list.models.some((m) => m.input_price_per_mtok != null) && <div className="mt-1.5 text-[11px] text-faint">Prices in USD per 1M input / output tokens, as the provider publishes them.</div>}
+        </div>
+      )}
+      {list.error && (
+        <div className="mb-3 rounded-[10px] bg-sel px-3 py-2 text-[12px] text-muted-foreground">
+          Couldn't load the model list ({list.error}). Enter the model name instead.
+        </div>
+      )}
+      {(manual || model) && (
+        <div className="-ml-3 space-y-0.5">
+          {manual ? (
+            <FormRow label="Model name:" labelWidth={120} hint={llm ? "Exactly as the provider expects it. Pick a model that supports structured (JSON) output." : "Exactly as the provider expects it in requests."}>
+              <Input
+                mono
+                value={model}
+                onChange={setModel}
+                placeholder={provider?.kind === "anthropic" ? "claude-sonnet-5-5" : llm ? (/localhost|127\.0\.0\.1/.test(provider?.base_url ?? "") ? "llama3.1:8b" : "gpt-5-mini") : "jev-latest"}
+                autoFocus
+              />
+            </FormRow>
+          ) : (
+            <FormRow label="Model:" labelWidth={120}>
+              <span className="font-mono text-[12.5px]">{chosen?.id ?? model}</span>
+            </FormRow>
+          )}
+          <FormRow label="Display name:" labelWidth={120}>
+            <Input value={display} onChange={setDisplay} placeholder="optional" />
+          </FormRow>
+          <FormRow label="Input price:" labelWidth={120} hint={chosen?.input_price_per_mtok != null ? "From the provider's list. USD per 1M tokens." : "USD per 1M tokens, used for cost monitoring."}>
+            <Input mono className="max-w-[8rem]" value={inPrice} onChange={setIn} />
+          </FormRow>
+          <FormRow label="Output price:" labelWidth={120}>
+            <Input mono className="max-w-[8rem]" value={outPrice} onChange={setOut} />
+          </FormRow>
+        </div>
+      )}
       {error && (
         <div className="mt-3">
           <ErrorNote>{error}</ErrorNote>
@@ -562,6 +786,7 @@ function AddModelSheet({ provider, onClose, onSaved }: { provider: Provider | nu
 type Range = "7d" | "30d" | "all";
 
 function Usage() {
+  const { providers } = useApp();
   const [range, setRange] = useState<Range>("30d");
   const since = useMemo(() => (range === "all" ? undefined : new Date(Date.now() - (range === "7d" ? 7 : 30) * 864e5).toISOString()), [range]);
   const usage = useAsync(() => api.usageSummary(since), [since]);
@@ -607,7 +832,7 @@ function Usage() {
               <tr key={r.model} className="border-b border-border/60">
                 <td className="py-2.5">
                   <span className="flex items-center gap-1.5">
-                    {r.model.startsWith("@") ? <Cloud className="size-3 text-faint" /> : <Cpu className="size-3 text-faint" />}
+                    <ModelIcon model={r.model} providers={providers} className="size-3 text-faint" />
                     {shortModel(r.model)}
                     <span className="font-mono text-[11px] text-faint">{r.model.startsWith("@") ? r.model.split("/")[0].slice(1) : "local"}</span>
                   </span>

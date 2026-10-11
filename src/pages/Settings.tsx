@@ -1,4 +1,5 @@
-import { Cloud, ExternalLink } from "lucide-react";
+import { ProviderIcon } from "../components/ProviderLogo";
+import { ExternalLink } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Badge, Button, FormRow, Input, Kbd, PageHeader, Progress, Section, Segmented, Switch } from "../components/ui";
 import { api } from "../lib/api";
@@ -10,9 +11,9 @@ type Tab = "general" | "engine" | "accounts";
 
 const SHORTCUTS: [string, string][] = [
   ["Command palette", "⌘ K"],
-  ["Playground · Bulk · Datasets · Experiments · Models", "⌘ 1–5"],
+  ["Playground · Bulk · Evaluations · Labelling · Question sets · Datasets · Models", "⌘ 1–7"],
   ["Back", "⌘ ["],
-  ["New experiment", "⌘ N"],
+  ["New evaluation", "⌘ N"],
   ["Import dataset", "⌘ O"],
   ["Classify / Run (Playground, Bulk)", "⌘ ↩"],
   ["Toggle sidebar", "⌃ ⌘ S"],
@@ -66,7 +67,7 @@ function General() {
         </FormRow>
       </Section>
       <Section title="Data">
-        <FormRow label="Data folder:" hint="Datasets, experiments and the local engine live here. The CLI uses the same folder.">
+        <FormRow label="Data folder:" hint="Datasets, evaluations and the local engine live here. The CLI uses the same folder.">
           <span className="font-mono text-[12px]" data-selectable>
             {info.data?.data_dir ?? "…"}
           </span>
@@ -158,7 +159,7 @@ function Accounts() {
         <div className="divide-y divide-border border-y border-border">
           {providers.map((p) => (
             <div key={p.id} className="flex items-center gap-2 py-2.5 text-[13px]">
-              <Cloud className="size-3.5 text-faint" />
+              <ProviderIcon p={p} className="size-3.5 text-faint" />
               <span className="flex-1">{p.name}</span>
               {p.has_key || p.kind === "custom" ? <Badge tone="good">Connected{p.key_hint ? ` · ${p.key_hint}` : ""}</Badge> : <Badge>Not connected</Badge>}
             </div>

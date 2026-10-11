@@ -56,6 +56,8 @@ pub struct Decision {
     pub latency_ms: f64,
     pub load_ms: f64,
     pub state_truncated: bool,
+    /// LLMs only: per primitive question, the passage of the input the answer rests on.
+    pub quotes: IndexMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,6 +130,9 @@ impl Decider {
     ) -> Result<Decision> {
         match parse_model_id(model)? {
             ModelRef::Local(name) => {
+                if questions.as_ref().is_some_and(|qs| qs.values().any(|q| matches!(q, Question::Text { .. }))) {
+                    return Err(Error::invalid(format!("{name} is a decision model and can't answer free-text questions; use an LLM")));
+                }
                 let req = DecideRequest { model: name.into(), state: Some(state), questions, preset, keep_alive: None };
                 let started = Instant::now();
                 let resp = self.ollaya.decide(&req).await?;
@@ -143,6 +148,7 @@ impl Decider {
                     latency_ms: if resp.eval_duration > 0 { resp.eval_duration as f64 / 1e6 } else { wall },
                     load_ms: resp.load_duration as f64 / 1e6,
                     state_truncated: resp.state_truncated,
+                    quotes: IndexMap::new(),
                 })
             }
             ModelRef::Cloud { provider, model: name } => {
@@ -170,6 +176,7 @@ impl Decider {
                     latency_ms,
                     load_ms: 0.0,
                     state_truncated: false,
+                    quotes: r.quotes,
                 })
             }
         }
@@ -227,7 +234,8 @@ impl Decider {
                 }
             }
         };
-        if key.is_none() && p.kind.requires_key() {
+        // A chat provider the user added (a local Ollama…) may go without a key; the built-in one is OpenAI.
+        if key.is_none() && (p.kind.requires_key() || (p.builtin && p.kind == ProviderKind::Chat)) {
             return Err(Error::Api {
                 status: 0,
                 code: "NO_API_KEY".into(),
@@ -271,8 +279,8 @@ impl Decider {
         let name = input.name.trim();
         let provider = match input.id.as_deref().map(str::trim).filter(|i| !i.is_empty()) {
             None => {
-                if input.kind != ProviderKind::Custom {
-                    return Err(Error::invalid("only custom providers can be added; the built-in ones already exist"));
+                if !matches!(input.kind, ProviderKind::Custom | ProviderKind::Chat) {
+                    return Err(Error::invalid("only custom and chat (OpenAI-compatible LLM) providers can be added; the others are built in"));
                 }
                 if name.is_empty() {
                     return Err(Error::invalid("give the provider a name"));
@@ -289,7 +297,7 @@ impl Decider {
                 }
                 let p = Provider {
                     id,
-                    kind: ProviderKind::Custom,
+                    kind: input.kind,
                     name: name.into(),
                     base_url,
                     account_id,
@@ -350,6 +358,13 @@ impl Decider {
         self.store.delete_provider(id)?;
         self.keys.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         Ok(())
+    }
+
+    /// The models a provider offers, for picking one instead of typing its name.
+    pub async fn provider_models(&self, id: &str) -> Result<Vec<cloud::RemoteModel>> {
+        let p = self.store.get_provider(id)?;
+        let key = self.key_for(&p)?;
+        cloud::list_models(&self.http, &p, key.as_deref()).await
     }
 
     /// One tiny request against the provider's first enabled model. API errors are reported in
@@ -422,6 +437,14 @@ impl Decider {
     }
 
     /// `id` is `@provider/model`; built-in models can only be disabled.
+    /// `models` reordered so the whole set finishes soonest: see [`fastest_order`]. When the
+    /// engine can't be asked, local models keep their order (after the cloud ones).
+    pub async fn fastest_order(&self, models: &[String]) -> Vec<String> {
+        let loaded = self.ollaya.loaded().await.unwrap_or_default();
+        let installed = self.ollaya.tags().await.unwrap_or_default();
+        fastest_order(models, &loaded, &installed)
+    }
+
     pub fn delete_cloud_model(&self, id: &str) -> Result<()> {
         let ModelRef::Cloud { provider, model } = parse_model_id(id)? else {
             return Err(Error::invalid(format!("\"{id}\" is not a cloud model id")));
@@ -434,10 +457,61 @@ impl Decider {
     }
 }
 
+/// Ollama-style names without a tag mean `:latest`.
+fn canonical(name: &str) -> String {
+    if name.contains(':') { name.to_string() } else { format!("{name}:latest") }
+}
+
+/// Order in which to run several models so results arrive soonest: cloud models first (no load,
+/// usually fast), then local models already in memory, then the rest smallest first (loading
+/// time grows with size; a router counts as in memory when a model of its family is). A router's own size says nothing about what it loads, so routers and
+/// models of unknown size go last. Ties keep the given order.
+pub fn fastest_order(models: &[String], loaded: &[String], installed: &[crate::ollaya::LocalModel]) -> Vec<String> {
+    let loaded: std::collections::HashSet<String> = loaded.iter().map(|m| canonical(m)).collect();
+    let size = |m: &str| {
+        let c = canonical(m);
+        installed
+            .iter()
+            .find(|i| canonical(&i.name) == c)
+            .filter(|i| i.size > 0 && i.details.format != "router")
+            .map_or(u64::MAX, |i| i.size)
+    };
+    let mut keyed: Vec<((u8, u64), &String)> = models
+        .iter()
+        .map(|m| {
+            let key = if m.starts_with('@') {
+                (0, 0)
+            } else if loaded.contains(&canonical(m)) || (!m.contains(':') && loaded.iter().any(|l| l.starts_with(&format!("{m}:")))) {
+                (1, size(m))
+            } else {
+                (2, size(m))
+            };
+            (key, m)
+        })
+        .collect();
+    keyed.sort_by_key(|(k, _)| *k);
+    keyed.into_iter().map(|(_, m)| m.clone()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::secrets::MemorySecrets;
+
+    #[test]
+    fn fastest_order_puts_cloud_then_loaded_then_small_first() {
+        use crate::ollaya::{LocalModel, ModelDetails};
+        let m = |name: &str, size: u64, format: &str| LocalModel {
+            name: name.into(),
+            modified_at: String::new(),
+            size,
+            details: ModelDetails { format: format.into(), ..Default::default() },
+        };
+        let installed = vec![m("big:7b", 7_000, "gguf"), m("small", 500, "onnx"), m("mid:1b", 1_000, "gguf"), m("laya", 10, "router")];
+        let models: Vec<String> = ["laya", "big:7b", "small", "@groq/llama", "mid:1b", "unknown"].map(String::from).to_vec();
+        let order = fastest_order(&models, &["mid:1b".into()], &installed);
+        assert_eq!(order, ["@groq/llama", "mid:1b", "small", "big:7b", "laya", "unknown"]);
+    }
 
     fn decider() -> (Decider, Arc<MemorySecrets>) {
         let secrets = Arc::new(MemorySecrets::new());

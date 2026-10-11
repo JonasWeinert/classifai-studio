@@ -138,7 +138,7 @@ fn from_objects(items: Vec<Value>) -> Result<ParsedDataset> {
     finish(columns, rows)
 }
 
-fn value_to_cell(v: &Value) -> String {
+pub(crate) fn value_to_cell(v: &Value) -> String {
     match v {
         Value::Null => String::new(),
         Value::String(s) => s.clone(),

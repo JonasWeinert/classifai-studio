@@ -5,7 +5,7 @@
 //! cancelled or interrupted experiment keeps what it has and can be resumed (rows that already have
 //! a prediction for that model are skipped).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -14,8 +14,8 @@ use serde::Serialize;
 
 use crate::dataset::Row;
 use crate::decider::{Decider, UsageContext};
-use crate::ollaya::Question;
 use crate::store::{ExperimentConfig, ExperimentStatus, Prediction, Store};
+use crate::task::with_earlier_answers;
 use crate::{Error, Result};
 
 pub const DEFAULT_CONCURRENCY: usize = 4;
@@ -31,13 +31,18 @@ pub struct RunEvent {
     pub total: usize,
     pub status: ExperimentStatus,
     pub message: Option<String>,
+    /// `model` is being loaded into memory (warm-up) before its first request.
+    #[serde(default)]
+    pub loading: bool,
 }
 
 /// Rows where at least one question's ground truth (after label corrections and aliases) is one of
 /// its labels, sampled deterministically.
 pub fn plan_rows(store: &Store, config: &ExperimentConfig) -> Result<Vec<usize>> {
     config.validate()?;
-    let rows = store.corrected_rows(&config.dataset_id, None)?;
+    // Only the ground-truth columns are read (in SQL), not whole rows.
+    let label_columns: Vec<String> = config.tasks.iter().map(|t| t.label_column.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let rows = store.column_cells(&config.dataset_id, &label_columns)?;
     let mut eligible: Vec<usize> = rows
         .iter()
         .filter(|(_, r)| config.has_ground_truth(r))
@@ -68,7 +73,6 @@ pub async fn execute(
 ) -> Result<ExperimentStatus> {
     let exp = store.get_experiment(&experiment_id)?;
     let config = Arc::new(exp.config.clone());
-    let questions = config.questions();
     let total = exp.row_indices.len();
     let concurrency = exp.config.concurrency.unwrap_or(DEFAULT_CONCURRENCY).clamp(1, 32);
     let rows = store.corrected_rows(&exp.dataset_id, Some(&exp.row_indices))?;
@@ -76,18 +80,22 @@ pub async fn execute(
         store.predictions(&experiment_id)?.into_iter().map(|p| (p.model, p.row_idx)).collect();
 
     store.set_experiment_status(&experiment_id, ExperimentStatus::Running, None)?;
+    let event = |model: Option<&str>, done: usize, status: ExperimentStatus, message: Option<String>, loading: bool| RunEvent {
+        experiment_id: experiment_id.clone(),
+        model: model.map(Into::into),
+        done,
+        total,
+        status,
+        message,
+        loading,
+    };
     let emit = |model: Option<&str>, done: usize, status: ExperimentStatus, message: Option<String>| {
-        on_event(RunEvent {
-            experiment_id: experiment_id.clone(),
-            model: model.map(Into::into),
-            done,
-            total,
-            status,
-            message,
-        })
+        on_event(event(model, done, status, message, false))
     };
 
-    for model in &exp.config.models {
+    // Fastest first (cloud, then local models in memory, then smallest), so results arrive soonest.
+    let order = decider.fastest_order(&exp.config.models).await;
+    for model in &order {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
@@ -95,7 +103,7 @@ pub async fn execute(
         if done >= total {
             continue;
         }
-        emit(Some(model), done, ExperimentStatus::Running, Some(format!("Loading {model}…")));
+        on_event(event(Some(model), done, ExperimentStatus::Running, Some(format!("Loading {model}…")), true));
         // For a cloud model this also checks the monthly budget (hard stop): when it is used up,
         // the model's remaining rows get that error without a single request.
         if let Err(e) = decider.load(model).await {
@@ -123,7 +131,6 @@ pub async fn execute(
             .map(|(idx, row)| {
                 let decider = decider.clone();
                 let ctx = UsageContext::experiment(experiment_id.clone());
-                let questions = questions.clone();
                 let config = config.clone();
                 let model = model.clone();
                 let cancel = cancel.clone();
@@ -131,7 +138,7 @@ pub async fn execute(
                     if cancel.load(Ordering::Relaxed) {
                         return None;
                     }
-                    Some(predict(&decider, &ctx, &model, &config, questions, idx, &row).await)
+                    Some(predict(&decider, &ctx, &model, &config, idx, &row).await)
                 }
             })
             .buffer_unordered(concurrency);
@@ -152,54 +159,108 @@ pub async fn execute(
     Ok(status)
 }
 
-/// One request for all questions; one prediction per question with a ground truth on this row.
-async fn predict(
-    decider: &Decider,
-    ctx: &UsageContext,
-    model: &str,
-    config: &ExperimentConfig,
-    questions: indexmap::IndexMap<String, Question>,
-    idx: usize,
-    row: &Row,
-) -> Vec<Prediction> {
-    let resp = match decider.decide(model, config.state(row), questions, ctx).await {
-        Ok(resp) => resp,
-        Err(e) => return error_predictions(model, idx, config, row, &e.to_string()),
-    };
-    // Latency is per request, so every question of the row shares it.
-    let latency = resp.latency_ms;
-    config
-        .tasks
-        .iter()
-        .filter_map(|task| {
-            let gt = task.ground_truth(row)?;
-            let base = Prediction {
-                model: model.to_string(),
-                row_idx: idx,
-                question_id: task.id.clone(),
-                ground_truth: gt,
-                predicted: None,
-                confidence: None,
-                top_prob: None,
-                probabilities: None,
-                latency_ms: None,
-                error: None,
-            };
-            Some(match resp.answers.get(&task.id).map(|a| task.interpret(a)) {
-                Some(Ok(i)) => Prediction {
-                    predicted: Some(i.predicted),
-                    confidence: Some(i.confidence),
-                    top_prob: Some(i.top_prob),
-                    probabilities: Some(i.probabilities),
-                    latency_ms: Some(latency),
-                    ..base
-                },
-                Some(Err(e)) => Prediction { error: Some(e.to_string()), ..base },
-                None if resp.refused.contains(&task.id) => Prediction { error: Some("model refused this question".into()), ..base },
-                None => Prediction { error: Some("answer missing from response".into()), ..base },
-            })
-        })
-        .collect()
+/// One request for the questions without a condition, then one per round for the follow-ups the
+/// predictions so far triggered (with their earlier questions and predicted answers appended to
+/// the input). One prediction per question with a ground truth on this row; a follow-up that was
+/// not asked but has a ground truth is recorded as not asked, so routing mistakes stay visible.
+async fn predict(decider: &Decider, ctx: &UsageContext, model: &str, config: &ExperimentConfig, idx: usize, row: &Row) -> Vec<Prediction> {
+    let mut out = Vec::new();
+    // task id -> predicted label (also for tasks without a ground truth here: follow-ups need it)
+    let mut predicted: HashMap<String, String> = HashMap::new();
+    let mut decided: HashSet<String> = HashSet::new();
+    let mut round = config.roots();
+    while !round.is_empty() {
+        let mut earlier_ids: Vec<&str> = Vec::new();
+        for t in &round {
+            for a in config.ancestors(t) {
+                if !earlier_ids.contains(&a.id.as_str()) {
+                    earlier_ids.push(&a.id);
+                }
+            }
+        }
+        let earlier: Vec<(String, String)> = config
+            .tasks
+            .iter()
+            .filter(|t| earlier_ids.contains(&t.id.as_str()))
+            .filter_map(|t| predicted.get(&t.id).map(|p| (t.instructions.trim().to_string(), p.clone())))
+            .collect();
+        let state = with_earlier_answers(config.state(row), &earlier);
+        match decider.decide(model, state, config.questions_of(&round), ctx).await {
+            Ok(resp) => {
+                // Latency is per request, so every question of the pass shares it.
+                let latency = resp.latency_ms;
+                for task in &round {
+                    decided.insert(task.id.clone());
+                    let interpreted = resp.answers.get(&task.id).map(|a| task.interpret(a));
+                    if let Some(Ok(i)) = &interpreted {
+                        predicted.insert(task.id.clone(), i.predicted.clone());
+                    }
+                    let Some(base) = blank_prediction(model, idx, task, row) else { continue };
+                    out.push(match interpreted {
+                        Some(Ok(i)) => Prediction {
+                            predicted: Some(i.predicted),
+                            confidence: Some(i.confidence),
+                            top_prob: Some(i.top_prob),
+                            probabilities: Some(i.probabilities),
+                            latency_ms: Some(latency),
+                            ..base
+                        },
+                        Some(Err(e)) => Prediction { error: Some(e.to_string()), ..base },
+                        None if resp.refused.contains(&task.id) => Prediction { error: Some("model refused this question".into()), ..base },
+                        None => Prediction { error: Some("answer missing from response".into()), ..base },
+                    });
+                }
+            }
+            Err(e) => {
+                for task in &round {
+                    decided.insert(task.id.clone());
+                    if let Some(base) = blank_prediction(model, idx, task, row) {
+                        out.push(Prediction { error: Some(e.to_string()), ..base });
+                    }
+                }
+            }
+        }
+        // Follow-ups of what was just decided: asked next, or ruled out (tasks are in order, so a
+        // ruled-out follow-up rules out its own follow-ups in the same sweep).
+        let mut next = Vec::new();
+        for t in &config.tasks {
+            let Some(w) = &t.when else { continue };
+            if decided.contains(&t.id) || !decided.contains(&w.parent) {
+                continue;
+            }
+            match predicted.get(&w.parent) {
+                Some(p) if w.answers.contains(p) => next.push(t),
+                other => {
+                    decided.insert(t.id.clone());
+                    if let Some(base) = blank_prediction(model, idx, t, row) {
+                        let why = match other {
+                            Some(p) => format!("not asked: {} was predicted “{p}”", w.parent),
+                            None => format!("not asked: {} has no answer", w.parent),
+                        };
+                        out.push(Prediction { error: Some(why), ..base });
+                    }
+                }
+            }
+        }
+        round = next;
+    }
+    out
+}
+
+/// A prediction without an answer yet, for a task with a ground truth on this row.
+fn blank_prediction(model: &str, idx: usize, task: &crate::task::TaskSpec, row: &Row) -> Option<Prediction> {
+    Some(Prediction {
+        model: model.to_string(),
+        row_idx: idx,
+        question_id: task.id.clone(),
+        ground_truth: task.ground_truth(row)?,
+        predicted: None,
+        confidence: None,
+        top_prob: None,
+        probabilities: None,
+        latency_ms: None,
+        error: None,
+    })
 }
 
 /// The same failure for every question with a ground truth on this row.
@@ -251,6 +312,7 @@ mod tests {
             labels: labels.iter().map(|v| LabelSpec { value: v.to_string(), description: None, aliases: vec![] }).collect(),
             positive_label: None,
             threshold: None,
+            when: None,
         }
     }
 

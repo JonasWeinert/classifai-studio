@@ -76,7 +76,7 @@ fn model_kind(m: &str) -> String {
 fn sampling_statement(e: &Experiment) -> String {
     match e.config.sample_size {
         Some(k) if k > 0 && e.row_indices.len() == k => format!(
-            "a deterministic random sample of {k} rows (Fisher–Yates shuffle with xorshift64, seed 0x{SAMPLE_SEED:X}) drawn from the rows with a usable ground truth; re-creating the experiment selects the same rows"
+            "a deterministic random sample of {k} rows (Fisher–Yates shuffle with xorshift64, seed 0x{SAMPLE_SEED:X}) drawn from the rows with a usable ground truth; re-creating the evaluation selects the same rows"
         ),
         _ => "all rows with a usable ground truth (no sampling)".into(),
     }
@@ -100,7 +100,7 @@ fn build(
     let mut d = vec![
         Heading(1, format!("{} — classification report", e.name)),
         Para(format!(
-            "Generated {} by ClassifAI {}. Experiment {} ({:?}, created {}).",
+            "Generated {} by ClassifAI {}. Evaluation {} ({:?}, created {}).",
             chrono::Local::now().format("%Y-%m-%d %H:%M"),
             env!("CARGO_PKG_VERSION"),
             e.id,
@@ -211,7 +211,7 @@ fn build(
 
     d.push(Heading(2, "Cost".into()));
     if usage.is_empty() {
-        d.push(Para("No usage was logged for this experiment.".into()));
+        d.push(Para("No usage was logged for this evaluation.".into()));
     } else {
         let mut rows: Vec<Vec<String>> = usage
             .iter()
@@ -405,6 +405,7 @@ mod tests {
             ],
             positive_label: None,
             threshold: None,
+            when: None,
         };
         let config = ExperimentConfig {
             name: "demo".into(),
