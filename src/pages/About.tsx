@@ -38,7 +38,7 @@ export function About() {
       </div>
 
       <div className="mt-8 border-t border-border pt-4 text-[12px] leading-relaxed text-muted-foreground">
-        <div>© {YEAR} Jonas Weinert. All rights reserved.</div>
+        <div>© {YEAR} Jonas Weinert. Released under the MIT License.</div>
         <button className="font-mono text-[11.5px] text-primary hover:underline" onClick={() => openExternal(REPO_URL)}>
           github.com/jonasweinert/classifai-studio
         </button>

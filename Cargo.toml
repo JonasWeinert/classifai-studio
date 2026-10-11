@@ -5,7 +5,7 @@ members = ["crates/classifai-core", "crates/classifai-cli", "src-tauri"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
+license = "MIT"
 
 [workspace.dependencies]
 classifai-core = { path = "crates/classifai-core" }

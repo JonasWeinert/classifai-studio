@@ -124,4 +124,6 @@ classifai export <experiment-id> report.html
 
 ## License
 
-Copyright © 2026 Jonas Weinert. No license has been chosen yet, so all rights are reserved for now. The open source packages ClassifAI Studio uses are listed, with their licenses, under About → Open source licenses in the app.
+ClassifAI Studio is released under the [MIT License](LICENSE). Copyright © 2026 Jonas Weinert.
+
+The open source packages it uses are listed, with their licenses, under About → Open source licenses in the app.
