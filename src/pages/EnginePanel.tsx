@@ -36,8 +36,8 @@ export function EnginePanel() {
     ["Version", engine?.version ?? "—"],
     ["API", <span className="font-mono">{engine?.base_url}</span>],
     ["Binary", <span className="font-mono text-[11.5px]">{engine?.binary_path ?? "—"}</span>],
-    ["Managed by ClassifAI", engine?.managed ? "Yes — installed into the app folder" : engine?.installed ? "No — using a system install" : "—"],
-    ["Started by this app", engine?.owned_process ? "Yes — stops when ClassifAI quits" : engine?.running ? "No — an external daemon" : "—"],
+    ["Managed by ClassifAI Studio", engine?.managed ? "Yes — installed into the app folder" : engine?.installed ? "No — using a system install" : "—"],
+    ["Started by this app", engine?.owned_process ? "Yes — stops when ClassifAI Studio quits" : engine?.running ? "No — an external daemon" : "—"],
     ["App data", <span className="font-mono text-[11.5px]">{info.data?.data_dir}</span>],
   ];
 
@@ -98,7 +98,7 @@ export function EnginePanel() {
       )}
 
       <div className="mt-5 text-[12px] text-faint">
-        Prefer your own install? ClassifAI uses any Ollaya on PATH or a daemon already listening on <span className="font-mono">127.0.0.1:11435</span> (set <span className="font-mono">OLLAYA_HOST</span> to change). <button className="underline hover:text-foreground" onClick={() => go({ page: "models" })}>Manage models →</button>
+        Prefer your own install? ClassifAI Studio uses any Ollaya on PATH or a daemon already listening on <span className="font-mono">127.0.0.1:11435</span> (set <span className="font-mono">OLLAYA_HOST</span> to change). <button className="underline hover:text-foreground" onClick={() => go({ page: "models" })}>Manage models →</button>
       </div>
     </>
   );

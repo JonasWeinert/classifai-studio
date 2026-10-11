@@ -36,7 +36,7 @@ export function describeError(e: unknown): Problem {
     case "BUDGET_EXCEEDED":
       return { message: "This month's cloud budget is used up, so cloud requests are paused.", action: { label: "Budget settings", route: { page: "settings", tab: "accounts" } } };
     case "KEYCHAIN":
-      return { message: "macOS Keychain refused access to the API key. Allow ClassifAI in the Keychain prompt and try again." };
+      return { message: "macOS Keychain refused access to the API key. Allow ClassifAI Studio in the Keychain prompt and try again." };
     case "TOO_MANY_OPTIONS":
       return { message: "Too many options for this model's context. Split the question or pick a model with a larger context." };
     case "INPUT_TOO_LONG":

@@ -142,7 +142,7 @@ export function ImportQuestionsModal({ open, onClose }: { open: boolean; onClose
                 <b className="font-semibold text-foreground">JSON Schema</b> — each property is a question: enums → pick one, booleans → yes/no, small integer ranges → scale, arrays → pick any or rank, strings → free text.
               </div>
               <div className="rounded-[10px] bg-card px-3 py-2">
-                <b className="font-semibold text-foreground">JSON</b> — a list of questions with options, a ClassifAI export, or Ollaya / TypeSafe questions.
+                <b className="font-semibold text-foreground">JSON</b> — a list of questions with options, a ClassifAI Studio export, or Ollaya / TypeSafe questions.
               </div>
               <div className="rounded-[10px] bg-card px-3 py-2">
                 <b className="font-semibold text-foreground">CSV</b> — a <span className="font-mono">question</span> column, plus optional type, options, description and context; or one row per option.

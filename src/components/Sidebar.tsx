@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { Boxes, Database, Layers, Tag, Rows3, FlaskConical, Search, SlidersHorizontal, Zap } from "lucide-react";
+import { Boxes, Database, Layers, Tag, Rows3, FlaskConical, Search, Settings, SlidersHorizontal, Zap } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useApp, type Route } from "../lib/app";
 import { usd } from "../lib/format";
@@ -32,6 +32,11 @@ const SECTIONS: { title: string; items: Item[] }[] = [
       { page: "models", label: "Models", icon: <Boxes />, match: ["models"] },
       { page: "finetune", label: "Fine-tune", icon: <SlidersHorizontal />, match: ["finetune"], badge: "Preview" },
     ],
+  },
+  // Pinned to the bottom of the list.
+  {
+    title: "",
+    items: [{ page: "settings", label: "Settings", icon: <Settings />, match: ["settings", "engine", "about", "licenses"], badge: "⌘," }],
   },
 ];
 
@@ -83,13 +88,13 @@ export function Sidebar() {
         <span className="ml-auto text-[11px] text-faint">⌘K</span>
       </button>
 
-      <nav ref={navRef} className="relative flex-1 px-2.5" onKeyDown={onKeyDown} aria-label="Sections">
+      <nav ref={navRef} className="relative flex flex-1 flex-col px-2.5" onKeyDown={onKeyDown} aria-label="Sections">
         {hl && (
           <div className="absolute inset-x-2.5 rounded-[6px] bg-sel transition-[top,height] duration-300 ease-[var(--ease-out)]" style={{ top: hl.top, height: hl.height }} />
         )}
         {SECTIONS.map((s) => (
-          <div key={s.title} className="mb-3">
-            <div className="px-2 pb-1 pt-1 text-[11px] font-semibold text-muted-foreground/80">{s.title}</div>
+          <div key={s.title || "end"} className={s.title ? "mb-3" : "mt-auto mb-2"}>
+            {s.title && <div className="px-2 pb-1 pt-1 text-[11px] font-semibold text-muted-foreground/80">{s.title}</div>}
             {s.items.map((n) => {
               const active = n.match.includes(route.page);
               return (

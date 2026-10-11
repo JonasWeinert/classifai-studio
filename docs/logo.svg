@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="100 100 824 824">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2f3d"/>
+      <stop offset="1" stop-color="#0d0f15"/>
+    </linearGradient>
+    <linearGradient id="top" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3d8bff"/>
+      <stop offset="1" stop-color="#8b5cff"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".14"/>
+      <stop offset=".5" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-80%" width="160%" height="260%">
+      <feGaussianBlur stdDeviation="22"/>
+    </filter>
+  </defs>
+  <!-- macOS icon grid: 824px squircle centred on the 1024 canvas -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#sheen)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="184.5" fill="none" stroke="#fff" stroke-opacity=".08" stroke-width="3"/>
+  <!-- A probability distribution: the winning answer in colour, the alternatives fading -->
+  <rect x="262" y="330" width="420" height="92" rx="46" fill="url(#top)" filter="url(#glow)" opacity=".55"/>
+  <rect x="262" y="330" width="420" height="92" rx="46" fill="url(#top)"/>
+  <rect x="262" y="466" width="290" height="92" rx="46" fill="#fff" fill-opacity=".82"/>
+  <rect x="262" y="602" width="170" height="92" rx="46" fill="#fff" fill-opacity=".38"/>
+  <!-- the pick -->
+  <circle cx="752" cy="376" r="46" fill="#fff"/>
+  <path d="M731 377l15 15 28-30" fill="none" stroke="#5a6dff" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

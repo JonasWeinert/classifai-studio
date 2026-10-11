@@ -550,7 +550,7 @@ function ProviderSheet({ provider, onClose, onSaved }: { provider: Editing; onCl
             <FormRow label="Name:" labelWidth={110}>
               <Input value={name} onChange={setName} placeholder="OpenRouter" />
             </FormRow>
-            <FormRow label="Base URL:" labelWidth={110} hint="ClassifAI calls {base}/v1/chat/completions.">
+            <FormRow label="Base URL:" labelWidth={110} hint="ClassifAI Studio calls {base}/v1/chat/completions.">
               <Input mono value={baseUrl} onChange={setBaseUrl} placeholder="https://openrouter.ai/api" />
             </FormRow>
           </>
@@ -560,7 +560,7 @@ function ProviderSheet({ provider, onClose, onSaved }: { provider: Editing; onCl
             <FormRow label="Name:" labelWidth={110}>
               <Input value={name} onChange={setName} placeholder="OpenRouter" />
             </FormRow>
-            <FormRow label="Base URL:" labelWidth={110} hint="ClassifAI calls {base}/v1/systemone.">
+            <FormRow label="Base URL:" labelWidth={110} hint="ClassifAI Studio calls {base}/v1/systemone.">
               <Input mono value={baseUrl} onChange={setBaseUrl} placeholder="https://openrouter.ai/api" />
             </FormRow>
           </>

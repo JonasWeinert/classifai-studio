@@ -1,6 +1,6 @@
 [package]
 name = "classifai-desktop"
-description = "ClassifAI: classify data with local decision models and compare them"
+description = "ClassifAI Studio: classify and label data with decision models and LLMs, and compare them"
 authors = ["Jonas Weinert"]
 version.workspace = true
 edition.workspace = true

@@ -34,6 +34,9 @@ export function Palette({ open, onOpenChange }: { open: boolean; onOpenChange: (
       { id: "nav-cloud", label: "Cloud providers & API keys", group: "Go to", icon: Cloud, keywords: ["openai", "typesafe", "jev", "cloudflare", "key"], onSelect: () => go({ page: "models", tab: "cloud" }) },
       { id: "nav-usage", label: "Usage & cost", group: "Go to", icon: Cloud, keywords: ["spend", "budget", "billing"], onSelect: () => go({ page: "models", tab: "usage" }) },
       { id: "nav-finetune", label: "Fine-tune", group: "Go to", icon: SlidersHorizontal, onSelect: () => go({ page: "finetune" }) },
+      ...(import.meta.env.DEV ? [{ id: "nav-onboarding", label: "Show welcome screen (dev)", group: "Go to", icon: Settings, keywords: ["onboarding", "setup", "first launch"], onSelect: () => go({ page: "onboarding" }) }] : []),
+      { id: "nav-about", label: "About ClassifAI Studio", group: "Go to", icon: Settings, keywords: ["version", "copyright", "github"], onSelect: () => go({ page: "about" }) },
+      { id: "nav-licenses", label: "Open source licenses", group: "Go to", icon: Settings, keywords: ["license", "credits", "attribution"], onSelect: () => go({ page: "licenses" }) },
       { id: "nav-settings", label: "Settings", group: "Go to", hint: "⌘,", icon: Settings, onSelect: () => go({ page: "settings" }) },
     ];
     const actions: CommandItem[] = [

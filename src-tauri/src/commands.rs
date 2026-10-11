@@ -51,6 +51,24 @@ pub fn app_info(app: AppHandle) -> Result<AppInfo> {
     })
 }
 
+// ---- command line tool ----------------------------------------------------------------------
+
+#[tauri::command]
+pub fn cli_status() -> crate::cli_install::CliStatus {
+    crate::cli_install::status()
+}
+
+/// Link the bundled `classifai` into /usr/local/bin (macOS asks for a password when needed).
+#[tauri::command]
+pub async fn cli_install(replace: bool) -> Result<crate::cli_install::CliStatus> {
+    tauri::async_runtime::spawn_blocking(move || crate::cli_install::install(replace)).await.map_err(|e| Error::invalid(e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn cli_uninstall() -> Result<crate::cli_install::CliStatus> {
+    tauri::async_runtime::spawn_blocking(crate::cli_install::uninstall).await.map_err(|e| Error::invalid(e.to_string()))?
+}
+
 // ---- engine -------------------------------------------------------------------------------
 
 #[tauri::command]

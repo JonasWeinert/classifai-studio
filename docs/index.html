@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClassifAI Studio</title>
+  <meta name="description" content="A desktop app for classifying and labelling text with decision models and LLMs, and for checking how well they do on your own data.">
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
+  <meta property="og:title" content="ClassifAI Studio">
+  <meta property="og:description" content="Classify and label text with decision models and LLMs, side by side, and check them against your own labels.">
+  <meta property="og:image" content="screenshots/playground.png">
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #1d1d1f;
+      --muted: #5f5f66;
+      --faint: #8a8a91;
+      --card: #f5f5f7;
+      --border: rgba(0, 0, 0, 0.08);
+      --accent: #0a6cff;
+      --accent-2: #7b5cff;
+      --code: #f0f0f3;
+      --shadow: 0 24px 60px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161618;
+        --fg: #f2f2f4;
+        --muted: #a5a5ad;
+        --faint: #7d7d85;
+        --card: #202023;
+        --border: rgba(255, 255, 255, 0.09);
+        --accent: #4c9bff;
+        --accent-2: #9c84ff;
+        --code: #232327;
+        --shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+        color-scheme: dark;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 16px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+    .narrow { max-width: 720px; }
+
+    header { position: sticky; top: 0; z-index: 10; backdrop-filter: saturate(180%) blur(16px); background: color-mix(in srgb, var(--bg) 78%, transparent); border-bottom: 1px solid var(--border); }
+    header .wrap { display: flex; align-items: center; gap: 12px; height: 56px; }
+    header img { width: 28px; height: 28px; }
+    header .name { font-weight: 650; letter-spacing: -0.01em; }
+    header nav { margin-left: auto; display: flex; gap: 20px; font-size: 14px; }
+    header nav a { color: var(--muted); }
+    header nav a:hover { color: var(--fg); text-decoration: none; }
+
+    .hero { padding: 88px 0 40px; text-align: center; }
+    .hero img.logo { width: 88px; height: 88px; filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.2)); }
+    h1 { font-size: clamp(34px, 5.4vw, 56px); line-height: 1.08; letter-spacing: -0.03em; margin: 28px auto 18px; max-width: 860px; font-weight: 700; }
+    .lede { font-size: clamp(17px, 2vw, 20px); color: var(--muted); max-width: 680px; margin: 0 auto; }
+    .actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 32px; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 20px; border-radius: 999px; font-size: 15px; font-weight: 550; }
+    .btn.primary { background: var(--accent); color: #fff; }
+    .btn.secondary { background: var(--card); color: var(--fg); }
+    .btn:hover { text-decoration: none; filter: brightness(1.06); }
+    .note { margin-top: 14px; font-size: 13px; color: var(--faint); }
+
+    .shot { display: block; width: 100%; height: auto; border-radius: 14px; border: 1px solid var(--border); box-shadow: var(--shadow); background: var(--card); }
+    .hero-shot { margin: 56px auto 0; max-width: 1080px; }
+
+    section { padding: 88px 0; }
+    section + section { border-top: 1px solid var(--border); }
+    h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -0.02em; line-height: 1.15; margin: 0 0 14px; font-weight: 700; }
+    h3 { font-size: 19px; letter-spacing: -0.01em; margin: 0 0 8px; font-weight: 650; }
+    .section-lede { color: var(--muted); font-size: 18px; margin: 0 0 40px; max-width: 720px; }
+    p { margin: 0 0 12px; }
+    .muted { color: var(--muted); }
+
+    .kinds { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .card { background: var(--card); border-radius: 18px; padding: 28px; }
+    .card .tag { display: inline-block; font-size: 12px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+    .card.llm .tag { color: var(--accent-2); }
+    .card p { color: var(--muted); }
+    .card .who { margin-top: 16px; font-size: 14px; color: var(--faint); }
+
+    .feature { display: grid; grid-template-columns: 5fr 7fr; gap: 56px; align-items: center; }
+    .feature + .feature { margin-top: 96px; }
+    .feature.flip { grid-template-columns: 7fr 5fr; }
+    .feature.flip .text { order: 2; }
+    .feature .text p { color: var(--muted); }
+
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .grid .card { padding: 24px; }
+    .grid h3 { font-size: 17px; }
+
+    pre { background: var(--code); border-radius: 14px; padding: 20px 22px; overflow-x: auto; font: 14px/1.7 ui-monospace, "SF Mono", Menlo, monospace; margin: 0 0 16px; }
+    code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.92em; }
+
+    footer { padding: 40px 0 56px; border-top: 1px solid var(--border); color: var(--faint); font-size: 14px; }
+    footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+    footer .right { margin-left: auto; display: flex; gap: 20px; }
+    footer a { color: var(--muted); }
+
+    @media (max-width: 820px) {
+      header nav a.optional { display: none; }
+      .kinds, .grid { grid-template-columns: 1fr; }
+      .feature, .feature.flip { grid-template-columns: 1fr; gap: 28px; }
+      .feature.flip .text { order: 0; }
+      section { padding: 64px 0; }
+      .hero { padding-top: 64px; }
+      footer .right { margin-left: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <img src="logo.svg" alt="">
+      <span class="name">ClassifAI Studio</span>
+      <nav>
+        <a class="optional" href="#models">Models</a>
+        <a class="optional" href="#features">Features</a>
+        <a href="#get-it">Get it</a>
+        <a href="https://github.com/jonasweinert/classifai-studio">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="hero wrap">
+      <img class="logo" src="logo.svg" alt="">
+      <h1>Classify text with decision models and LLMs, and find out which one you can trust.</h1>
+      <p class="lede">ClassifAI Studio is a Mac app for asking questions about your data. Run several models on the same questions, compare their answers, and check them against labels you trust.</p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/jonasweinert/classifai-studio">View on GitHub</a>
+        <a class="btn secondary" href="https://github.com/jonasweinert/classifai-studio/releases/latest">Download for Mac</a>
+      </div>
+      <div class="note">Apple Silicon Macs · not notarised yet, <a href="#get-it">see how to open it</a></div>
+      <picture>
+        <source srcset="screenshots/playground-dark.png" media="(prefers-color-scheme: dark)">
+        <img class="shot hero-shot" src="screenshots/playground.png" width="2880" height="1800" alt="The Playground: one entry, three questions, a decision model and an LLM answering side by side">
+      </picture>
+    </div>
+
+    <section id="models">
+      <div class="wrap">
+        <h2>Two kinds of models, one set of questions</h2>
+        <p class="section-lede">Every model gets the same questions and gives answers in the same shape, so you can put a small local model next to a large LLM and compare them directly.</p>
+        <div class="kinds">
+          <div class="card">
+            <span class="tag">Decision models</span>
+            <h3>Made for classification</h3>
+            <p>They read the input and the questions and return a probability for every option, taken from the model itself. They are fast and cheap, and their probabilities are usually well calibrated.</p>
+            <div class="who">On your Mac with Ollaya, or hosted by TypeSafe, OpenAI Decisions and Cloudflare Workers AI.</div>
+          </div>
+          <div class="card llm">
+            <span class="tag">LLMs</span>
+            <h3>Same questions, plus free text</h3>
+            <p>ClassifAI Studio turns your questions into a JSON schema, so an LLM answers in the same format. It also quotes the part of the input it used, and it can answer open questions. Its probabilities are its own estimates.</p>
+            <div class="who">Anthropic, OpenAI, OpenRouter, Groq, Ollama, LM Studio and other OpenAI-compatible servers.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="features">
+      <div class="wrap">
+        <div class="feature">
+          <div class="text">
+            <h2>Measure before you rely on a model</h2>
+            <p>Run a dataset through several models and score each question against its ground truth. You get accuracy, F1, Cohen's κ, calibration and latency per model, a confusion matrix, and a calibration chart that shows whether a model's confidence means anything.</p>
+            <p>A review queue shows the answers most worth checking. When you correct a label there, the scores update without running the models again.</p>
+          </div>
+          <img class="shot" src="screenshots/evaluation.png" width="2880" height="1800" loading="lazy" alt="An evaluation with a leaderboard, confusion matrix and calibration chart">
+        </div>
+
+        <div class="feature flip">
+          <div class="text">
+            <h2>Label by hand where you have no labels</h2>
+            <p>Go through a dataset entry by entry, mostly from the keyboard. Select a passage, or hold ⌥ and move by sentence, and press ↵ to keep it as the evidence for an answer. Each question has its own colour, so you can see which passage supports which answer.</p>
+            <p>Your labels become a dataset you can evaluate models against.</p>
+          </div>
+          <img class="shot" src="screenshots/labelling.png" width="2880" height="1800" loading="lazy" alt="Manual labelling with highlighted passages for two questions">
+        </div>
+
+        <div class="feature">
+          <div class="text">
+            <h2>Use the providers you already have</h2>
+            <p>Connect hosted decision APIs and LLM providers next to your local models. Search a provider's model list to add a model, and its published prices are filled in. You see what each model costs per entry and can set a monthly budget. API keys stay in the macOS Keychain.</p>
+          </div>
+          <img class="shot" src="screenshots/models.png" width="2880" height="1800" loading="lazy" alt="Cloud providers, with decision APIs and LLM providers">
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="wrap">
+        <h2>Also in the app</h2>
+        <p class="section-lede">The parts you need around the models.</p>
+        <div class="grid">
+          <div class="card">
+            <h3>Seven question types</h3>
+            <p class="muted">Pick one, pick any, yes/no, scale, rank, number and free text, each with its own context and option descriptions.</p>
+          </div>
+          <div class="card">
+            <h3>Follow-up questions</h3>
+            <p class="muted">Ask a question only for certain answers, such as "if No, ask why". Models answer it in a second pass with the earlier answer added.</p>
+          </div>
+          <div class="card">
+            <h3>Why this answer?</h3>
+            <p class="muted">For a decision model, parts of the input are left out one at a time to see what moved the answer. For an LLM, the quoted passage is found in the input.</p>
+          </div>
+          <div class="card">
+            <h3>Bulk runs</h3>
+            <p class="muted">Answer the same questions for many entries with one model, then save the answers as a dataset or CSV.</p>
+          </div>
+          <div class="card">
+            <h3>Import from anywhere</h3>
+            <p class="muted">CSV, JSON, Excel, the Hugging Face Hub, and folders of Word files, PDFs and images.</p>
+          </div>
+          <div class="card">
+            <h3>Reports and a CLI</h3>
+            <p class="muted">Export an evaluation as Markdown or HTML. The <code>classifai</code> command line works on the same data as the app.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="get-it">
+      <div class="wrap narrow">
+        <h2>Get it</h2>
+        <p class="muted">Download the latest build for Apple Silicon Macs from the <a href="https://github.com/jonasweinert/classifai-studio/releases/latest">releases page</a>.</p>
+        <p class="muted"><b>The app is not notarised by Apple yet.</b> The first time you open it, macOS will refuse. Right-click the app and choose Open, or on macOS 15 and later allow it under System Settings → Privacy &amp; Security → Open Anyway. You can also run <code>xattr -dr com.apple.quarantine "/Applications/ClassifAI Studio.app"</code> in Terminal.</p>
+        <p class="muted">To build it yourself you need macOS, Rust, Node 20 or later and pnpm.</p>
+        <pre>git clone https://github.com/jonasweinert/classifai-studio.git
+cd classifai-studio
+pnpm install
+pnpm tauri build</pre>
+        <p class="muted">On first launch the app offers to install the Ollaya engine into its own folder and to download a small local model. You can skip that and use only cloud models or LLMs.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>© 2026 Jonas Weinert</span>
+      <div class="right">
+        <a href="https://github.com/jonasweinert/classifai-studio">GitHub</a>
+        <a href="https://github.com/jonasweinert/classifai-studio#development">Development</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

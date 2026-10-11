@@ -1,3 +1,4 @@
+import { CliInstall } from "../components/CliInstall";
 import { ProviderIcon } from "../components/ProviderLogo";
 import { ExternalLink } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -49,7 +50,7 @@ export function Settings() {
 }
 
 function General() {
-  const { theme, setTheme } = useApp();
+  const { theme, setTheme, go } = useApp();
   const info = useAsync(() => api.appInfo(), []);
   return (
     <>
@@ -66,6 +67,21 @@ function General() {
           />
         </FormRow>
       </Section>
+      {/* Development builds only: look at the first-launch screen again. */}
+      {import.meta.env.DEV && (
+        <Section title="Welcome screen" subtitle="Development builds only">
+          <FormRow label="First launch:" hint="The setup steps shown when no model is set up yet.">
+            <Button size="sm" onClick={() => go({ page: "onboarding" })}>
+              Show welcome screen
+            </Button>
+          </FormRow>
+        </Section>
+      )}
+      <Section title="Command line tool">
+        <FormRow label="classifai:" align="start">
+          <CliInstall />
+        </FormRow>
+      </Section>
       <Section title="Data">
         <FormRow label="Data folder:" hint="Datasets, evaluations and the local engine live here. The CLI uses the same folder.">
           <span className="font-mono text-[12px]" data-selectable>
@@ -73,7 +89,15 @@ function General() {
           </span>
         </FormRow>
         <FormRow label="Version:">
-          <span className="text-[13px]">ClassifAI {info.data?.version ?? ""}</span>
+          <span className="flex items-center gap-3 text-[13px]">
+            ClassifAI Studio {info.data?.version ?? ""}
+            <button className="text-primary hover:underline" onClick={() => go({ page: "about" })}>
+              About
+            </button>
+            <button className="text-primary hover:underline" onClick={() => go({ page: "licenses" })}>
+              Open source licenses
+            </button>
+          </span>
         </FormRow>
       </Section>
       <Section title="Keyboard shortcuts">

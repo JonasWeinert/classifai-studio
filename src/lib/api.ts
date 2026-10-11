@@ -6,6 +6,7 @@ import type {
   LabelMark,
   LabelSnippet,
   RemoteModel,
+  CliStatus,
   LabelSession,
   LabelSessionInput,
   LabelSessionSummary,
@@ -75,6 +76,9 @@ const call = async <T>(cmd: string, args?: Record<string, unknown>) => (await ba
 const listenTo = async <T>(event: string, cb: (p: T) => void) => (await backend).listen<T>(event, cb);
 
 export const api = {
+  cliStatus: () => call<CliStatus>("cli_status"),
+  cliInstall: (replace = false) => call<CliStatus>("cli_install", { replace }),
+  cliUninstall: () => call<CliStatus>("cli_uninstall"),
   appInfo: () => call<{ version: string; data_dir: string }>("app_info"),
 
   engineStatus: () => call<EngineStatus>("engine_status"),

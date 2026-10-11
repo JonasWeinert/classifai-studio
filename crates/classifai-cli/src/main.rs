@@ -15,7 +15,7 @@ use classifai_core::{analysis, export, runner};
 use indexmap::IndexMap;
 
 #[derive(Parser)]
-#[command(name = "classifai", version, about = "Classify data with local decision models")]
+#[command(name = "classifai", version, about = "ClassifAI Studio on the command line: classify text and read evaluations")]
 struct Cli {
     /// Ollaya base URL
     #[arg(long, global = true, env = "OLLAYA_HOST", default_value = DEFAULT_BASE_URL)]
@@ -151,6 +151,7 @@ async fn main() -> Result<()> {
                             }
                             Some(Answer::Noul { noul }) => println!("{model:<24} p(yes) {noul:.3}  {ms:.0} ms{cost}"),
                             Some(Answer::Score { score, .. }) => println!("{model:<24} score {score:.2}  {ms:.0} ms{cost}"),
+                            Some(Answer::Text { text }) => println!("{model:<24} {text}  {ms:.0} ms{cost}"),
                             None if !r.refused.is_empty() => println!("{model:<24} refused to answer"),
                             None => println!("{model:<24} error: answer missing from response"),
                         }

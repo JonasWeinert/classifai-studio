@@ -110,6 +110,15 @@ export interface ProviderInput {
   api_key?: string | null;
 }
 
+/** The `classifai` command line tool's install state (a link in /usr/local/bin to the app's copy). */
+export interface CliStatus {
+  state: "installed" | "not_installed" | "broken" | "other" | "unavailable";
+  target: string;
+  source: string | null;
+  points_to: string | null;
+  on_path: boolean;
+}
+
 /** A model from a provider's own list (GET /v1/models), to pick when adding one. */
 export interface RemoteModel {
   id: string;

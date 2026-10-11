@@ -281,7 +281,7 @@ function fromJson(data: unknown): ImportedSet {
 
   if (isOurPayload(data)) {
     const d = data as QuestionSetPayload & { name?: string; description?: string };
-    return { format: "ClassifAI question set", name: d.name ?? null, description: d.description ?? null, payload: { context: d.context ?? "", questions: d.questions.map((q) => ({ ...blank(q.kind, q.text), ...q })) }, notes };
+    return { format: "ClassifAI Studio question set", name: d.name ?? null, description: d.description ?? null, payload: { context: d.context ?? "", questions: d.questions.map((q) => ({ ...blank(q.kind, q.text), ...q })) }, notes };
   }
   if (Array.isArray(data)) {
     return done("JSON list", data.map((x, i) => (x && typeof x === "object" ? fromLooseObject(x as Record<string, unknown>, `Question ${i + 1}`) : typeof x === "string" ? finish({ text: x, kind: null, options: [] }, `Question ${i + 1}`) : null)));

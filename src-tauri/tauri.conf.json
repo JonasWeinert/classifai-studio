@@ -1,19 +1,19 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ClassifAI",
+  "productName": "ClassifAI Studio",
   "version": "0.1.0",
   "identifier": "dev.classifai.app",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "sh scripts/build-cli.sh debug && pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm build && sh scripts/build-cli.sh release",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
         "label": "main",
-        "title": "ClassifAI",
+        "title": "ClassifAI Studio",
         "width": 1320,
         "height": 860,
         "minWidth": 980,
@@ -45,6 +45,9 @@
     "macOSPrivateApi": true
   },
   "bundle": {
+    "externalBin": [
+      "binaries/classifai"
+    ],
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",

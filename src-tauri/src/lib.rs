@@ -1,3 +1,4 @@
+mod cli_install;
 mod commands;
 
 use std::collections::HashMap;
@@ -9,7 +10,7 @@ use classifai_core::engine::Engine;
 use classifai_core::ollaya::Client;
 use classifai_core::secrets::KeychainSecrets;
 use classifai_core::store::Store;
-use tauri::menu::{AboutMetadata, Menu, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{Menu, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 pub struct AppState {
@@ -31,6 +32,8 @@ impl AppState {
 
 /// Custom menu items: (id = payload of `menu://action`, title, accelerator).
 const MENU_ACTIONS: &[(&str, &str, &str)] = &[
+    ("about", "About ClassifAI Studio", ""),
+    ("licenses", "Open Source Licenses", ""),
     ("settings", "Settings…", "CmdOrCtrl+,"),
     ("import", "Import Dataset…", "CmdOrCtrl+O"),
     ("new-experiment", "New Evaluation", "CmdOrCtrl+N"),
@@ -51,15 +54,14 @@ const MENU_ACTIONS: &[(&str, &str, &str)] = &[
 fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let item = |id: &str| -> tauri::Result<_> {
         let (id, title, accel) = MENU_ACTIONS.iter().find(|(i, ..)| *i == id).expect("menu action");
-        MenuItemBuilder::with_id(*id, *title).accelerator(*accel).build(app)
+        let b = MenuItemBuilder::with_id(*id, *title);
+        if accel.is_empty() { b.build(app) } else { b.accelerator(*accel).build(app) }
     };
-    let about = AboutMetadata {
-        name: Some("ClassifAI".into()),
-        version: Some(app.package_info().version.to_string()),
-        ..Default::default()
-    };
-    let app_menu = SubmenuBuilder::new(app, "ClassifAI")
-        .about(Some(about))
+    // "About" opens the app's own About page (with a clickable repository link) instead of the
+    // standard panel.
+    let app_menu = SubmenuBuilder::new(app, "ClassifAI Studio")
+        .item(&item("about")?)
+        .item(&item("licenses")?)
         .separator()
         .item(&item("settings")?)
         .separator()
@@ -240,6 +242,9 @@ pub fn run() {
             commands::provider_delete,
             commands::provider_test,
             commands::provider_models,
+            commands::cli_status,
+            commands::cli_install,
+            commands::cli_uninstall,
             commands::cloud_model_save,
             commands::cloud_model_delete,
             commands::usage_summary,

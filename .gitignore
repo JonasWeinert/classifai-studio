@@ -16,3 +16,6 @@ src-tauri/gen/schemas
 .idea
 .DS_Store
 *.sw?
+
+# The CLI copied into the app bundle (scripts/build-cli.sh)
+src-tauri/binaries/

@@ -27,7 +27,11 @@ export type Route =
   | { page: "engine" }
   | { page: "settings"; tab?: "general" | "engine" | "accounts" }
   | { page: "compare"; a: string; b?: string }
-  | { page: "review"; id: string; question?: string };
+  | { page: "review"; id: string; question?: string }
+  /** The first-launch welcome screen, shown again on request. */
+  | { page: "onboarding" }
+  | { page: "about" }
+  | { page: "licenses" };
 
 type Tone = "good" | "bad" | "neutral";
 
@@ -183,7 +187,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setRoute(h[h.length - 1]);
   }, []);
 
-  useEffect(() => save("route", route), [route]);
+  useEffect(() => void (route.page !== "onboarding" && save("route", route)), [route]);
 
   // Appearance: follow the system unless the user picked light or dark in Settings.
   useEffect(() => {

@@ -25,7 +25,7 @@ function HfMark({ className }: { className?: string }) {
 const KINDS: { value: ImportKind; title: string; text: string; formats: string; icon: React.ReactNode }[] = [
   { value: "spreadsheet", title: "Spreadsheet", text: "A table with one row per entry. For Excel files you choose the sheet, header row and columns.", formats: "CSV · TSV · Excel (XLSX, XLS) · ODS · JSON · JSONL", icon: <FileSpreadsheet className="size-6" /> },
   { value: "hf", title: "Hugging Face", text: "A dataset from the Hub by name or link: pick splits and take all rows or a sample.", formats: "Any dataset the Hugging Face viewer can read", icon: <HfMark className="size-6" /> },
-  { value: "files", title: "Documents & images", text: "One row per file. Word and PDF become Markdown text; images are copied into ClassifAI's library.", formats: "DOCX · PDF · TXT · Markdown · PNG · JPG · WebP · HEIC", icon: <FileText className="size-6" /> },
+  { value: "files", title: "Documents & images", text: "One row per file. Word and PDF become Markdown text; images are copied into ClassifAI Studio's library.", formats: "DOCX · PDF · TXT · Markdown · PNG · JPG · WebP · HEIC", icon: <FileText className="size-6" /> },
 ];
 
 export function ImportChooser({ open, onClose, onPick }: { open: boolean; onClose: () => void; onPick: (k: ImportKind) => void }) {
@@ -265,7 +265,7 @@ export function FilesImportModal({ paths, onClose, onChange }: { paths: string[]
         <div className="rounded-[10px] bg-sel px-3 py-2 text-[12px] leading-snug text-muted-foreground">
           One row per file with <span className="font-mono">name</span>, <span className="font-mono">kind</span>, <span className="font-mono">content</span>, <span className="font-mono">file</span> and <span className="font-mono">source_path</span>.
           {counts.docs > 0 && " Word and PDF files are converted to Markdown (text only; scanned PDFs have none)."}
-          {counts.images > 0 && " Images are copied into ClassifAI's media folder under a new name and linked from the row; the original stays where it is."}
+          {counts.images > 0 && " Images are copied into ClassifAI Studio's media folder under a new name and linked from the row; the original stays where it is."}
         </div>
       </div>
     </Modal>

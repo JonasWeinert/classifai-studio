@@ -19,6 +19,7 @@ import { FineTune } from "./pages/FineTune";
 import { Models } from "./pages/Models";
 import { NewExperiment } from "./pages/NewExperiment";
 import { Onboarding } from "./pages/Onboarding";
+import { About, Licenses } from "./pages/About";
 import { NewBulkRun } from "./pages/Bulk";
 import { BulkRunDetail, BulkRuns } from "./pages/BulkRuns";
 import { QuestionSetEditor, QuestionSets } from "./pages/QuestionSets";
@@ -64,6 +65,8 @@ export default function App() {
       if (NAV[action]) return go(NAV[action]);
       if (action === "back") return back();
       if (action === "settings") return go({ page: "settings" });
+      if (action === "about") return go({ page: "about" });
+      if (action === "licenses") return go({ page: "licenses" });
       if (action === "new-experiment") return go({ page: "new-experiment" });
       if (action === "import") return imp.run();
       if (action === "palette") return setPaletteOpen(true);
@@ -156,6 +159,8 @@ export default function App() {
   if (engine === null) {
     return <div className="h-full titlebar" />;
   }
+  // The welcome-screen viewer is a development aid; release builds never show it on request.
+  if (route.page === "onboarding" && import.meta.env.DEV) return <Onboarding preview onSkip={back} />;
   if (needsOnboarding && route.page !== "settings" && route.page !== "models") {
     return <Onboarding onSkip={() => setSkip(true)} />;
   }
@@ -203,6 +208,8 @@ export default function App() {
               {route.page === "models" && <Models />}
               {route.page === "finetune" && <FineTune />}
               {(route.page === "settings" || route.page === "engine") && <Settings />}
+              {route.page === "about" && <About />}
+              {route.page === "licenses" && <Licenses />}
             </div>
           </ToolbarContext.Provider>
         </div>

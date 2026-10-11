@@ -346,10 +346,7 @@ pub(crate) fn answers(output: &Value, questions: &IndexMap<String, Question>) ->
             }
             Question::Noul { .. } => {
                 let p = out.get("probability_true").or_else(|| out.get("probability")).or(Some(out)).and_then(as_prob);
-                let p = p.or_else(|| match out.get("answer").and_then(Value::as_bool).or_else(|| out.as_bool()) {
-                    Some(b) => Some(if b { 1.0 } else { 0.0 }),
-                    None => None,
-                });
+                let p = p.or_else(|| out.get("answer").and_then(Value::as_bool).or_else(|| out.as_bool()).map(|b| if b { 1.0 } else { 0.0 }));
                 p.map(|noul| Answer::Noul { noul })
             }
             Question::Text { .. } => {

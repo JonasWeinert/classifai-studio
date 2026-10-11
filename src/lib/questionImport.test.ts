@@ -95,10 +95,10 @@ describe("JSON", () => {
     expect(r.payload.questions[2].levels).toEqual(["calm", "annoyed", "furious"]);
   });
 
-  it("round-trips ClassifAI's own payload", () => {
+  it("round-trips ClassifAI Studio's own payload", () => {
     const payload = { context: "ctx", questions: [{ kind: "choice", text: "Q", context: "", options: [{ name: "a", description: "" }, { name: "b", description: "" }], threshold: 0.5, yes: "", no: "", levels: [], values: "", unit: "" }] };
     const r = parseQuestionFile("set.json", JSON.stringify(payload));
-    expect(r.format).toBe("ClassifAI question set");
+    expect(r.format).toBe("ClassifAI Studio question set");
     expect(r.payload).toEqual(payload);
   });
 

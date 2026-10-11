@@ -345,6 +345,7 @@ const MOCK_UI = "classifai-mock-ui:";
 /** Local models "in memory" (the mock's /api/ps). */
 const mockLoaded = new Set<string>(["nli"]);
 let hfToken: string | null = null;
+let cliInstalled = false;
 
 // ---- manual labelling (in memory) -------------------------------------------------------------
 interface MockLabel { id: string; name: string; dataset_id: string; dataset_name: string; columns: string[]; question_set_id: string | null; question_set_version: number | null; questions: any; titles: Record<string, string>; row_order: number[]; position: number; saved_dataset_id: string | null; created_at: string; updated_at: string; answers: Record<number, Record<string, unknown>>; marks: Record<number, { skipped: boolean; flagged: boolean; note: string | null }>; evidence?: Record<number, Record<string, unknown[]>> }
@@ -426,6 +427,9 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
       return r(p);
     }
     case "provider_delete": { const i = providers.findIndex((p) => p.id === args.id); if (i >= 0) providers.splice(i, 1); return r(undefined); }
+    case "cli_status": return r({ state: cliInstalled ? "installed" : "not_installed", target: "/usr/local/bin/classifai", source: "/Applications/ClassifAI Studio.app/Contents/MacOS/classifai", points_to: cliInstalled ? "/Applications/ClassifAI Studio.app/Contents/MacOS/classifai" : null, on_path: true });
+    case "cli_install": { await sleep(600); cliInstalled = true; return invoke("cli_status"); }
+    case "cli_uninstall": { await sleep(300); cliInstalled = false; return invoke("cli_status"); }
     case "provider_models": {
       await sleep(400);
       const p = providers.find((x) => x.id === args.id);

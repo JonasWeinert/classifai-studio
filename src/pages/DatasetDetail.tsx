@@ -357,7 +357,7 @@ export function DatasetDetail({ id }: { id: string }) {
         }
       >
         <p className="text-[13px] text-muted-foreground">
-          This removes <b className="text-foreground">{d.name}</b> and its {exps.data?.length ?? 0} evaluation(s) from ClassifAI. The original file is not touched.
+          This removes <b className="text-foreground">{d.name}</b> and its {exps.data?.length ?? 0} evaluation(s) from ClassifAI Studio. The original file is not touched.
           {(derived.data?.length ?? 0) > 0 && ` ${derived.data!.length} dataset${derived.data!.length === 1 ? "" : "s"} saved from it (${derived.data!.map((x) => x.name).join(", ")}) keep their rows: the linked cells are copied into them.`}
         </p>
       </Modal>
