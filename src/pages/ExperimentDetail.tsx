@@ -1,17 +1,18 @@
 import clsx from "clsx";
-import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, Copy, GitCompareArrows, ListChecks, Pencil, Play, Square, SquareArrowOutUpRight, Trash2, Trophy, Undo2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, Copy, GitCompareArrows, ListChecks, Pencil, Play, SlidersHorizontal, Square, SquareArrowOutUpRight, Trash2, Trophy, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfusionMatrix, heat, MetricBars, Reliability } from "../components/charts";
 import { ThresholdPanel } from "../components/ThresholdPanel";
 import { Badge, Button, CardHeader, ErrorNote, Input, Modal, PageHeader, Progress, Segmented, Select, Spinner, Tooltip } from "../components/ui";
 import { api, errorMessage, events, pickSavePath } from "../lib/api";
-import { kappaWord, openInPlayground } from "../lib/insights";
+import { kappaWord } from "../lib/insights";
+import { openSetupInPlayground } from "../lib/setupPlayground";
 import { Clamp } from "../components/Clamp";
 import { ModelLoading } from "../components/RunPieces";
 import { useModelState } from "../lib/modelStatus";
 import { useApp } from "../lib/app";
 import { ago, modelColor, ms, num, pct, shortModel, usd } from "../lib/format";
-import type { Experiment, ExperimentStatus, ModelMetrics, Page, PredictionRow, Report, TaskSpec, UsageRow } from "../lib/types";
+import type { ExperimentConfig, Experiment, ExperimentStatus, ModelMetrics, Page, PredictionRow, Report, TaskSpec, UsageRow } from "../lib/types";
 
 const OVERALL = "__overall";
 
@@ -163,6 +164,11 @@ export function ExperimentDetail({ id }: { id: string }) {
                 Compare…
               </Button>
             </Tooltip>
+            <Tooltip content="Train a local model on this setup's labels" side="bottom">
+              <Button variant="ghost" icon={<SlidersHorizontal className="size-3.5" />} disabled={running} onClick={() => go({ page: "finetune-new", fromExperiment: id })}>
+                Fine-tune…
+              </Button>
+            </Tooltip>
             <Tooltip content="Open the setup pre-filled, to tweak and re-run" side="bottom">
               <Button variant="ghost" icon={<Copy className="size-3.5" />} onClick={() => go({ page: "new-experiment", fromExperiment: id })}>
                 Duplicate…
@@ -276,7 +282,7 @@ export function ExperimentDetail({ id }: { id: string }) {
 
           {report.models.length > 1 && ranked.length > 1 && <Agreement report={report} color={color} />}
 
-          <PredictionsExplorer key={task.id} id={id} datasetId={exp.dataset_id} task={task} models={exp.config.models} color={color} tick={tick} onChanged={load} />
+          <PredictionsExplorer key={task.id} id={id} datasetId={exp.dataset_id} config={exp.config} task={task} models={exp.config.models} color={color} tick={tick} onChanged={load} />
         </>
       )}
 
@@ -767,6 +773,7 @@ const PAGE = 40;
 function PredictionsExplorer({
   id,
   datasetId,
+  config,
   task,
   models,
   color,
@@ -775,6 +782,8 @@ function PredictionsExplorer({
 }: {
   id: string;
   datasetId: string;
+  /** The evaluation's setup, so "Open in Playground" brings its questions. */
+  config: ExperimentConfig;
   task: TaskSpec;
   models: string[];
   color: (m: string) => string;
@@ -930,7 +939,11 @@ function PredictionsExplorer({
                           <Button size="icon" variant="ghost" icon={<Pencil className="size-3.5" />} onClick={() => setRelabel({ row: r, value: r.ground_truth, note: r.review_note ?? "" })} />
                         </Tooltip>
                         <Tooltip content="Open in Playground">
-                          <Button size="icon" variant="ghost" icon={<SquareArrowOutUpRight className="size-3.5" />} onClick={() => openInPlayground(go, r.input)} />
+                          <Button size="icon" variant="ghost" icon={<SquareArrowOutUpRight className="size-3.5" />} onClick={async () => {
+                              await openSetupInPlayground({ config, datasetId, row: r.row_idx, models });
+                              go({ page: "quick" });
+                            }}
+                          />
                         </Tooltip>
                       </div>
                     )}

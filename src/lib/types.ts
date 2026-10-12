@@ -613,3 +613,142 @@ export interface SheetPreview {
   width: number;
   header_guess: number;
 }
+
+// ---- fine-tuning ----
+
+/** A model a fine-tune can start from (`finetune::Base`). */
+export interface FineTuneBase {
+  id: string;
+  title: string;
+  description: string;
+  repo: string;
+  subfolder: string | null;
+  kind: "encoder" | "decoder";
+  params: string;
+  /** The same model in Ollaya, compared against on the held-out rows. */
+  ollaya: string | null;
+  /** A language model that gets a new decision head. */
+  new_head: boolean;
+  min_memory_gb: number;
+  /** Training seconds per 1,000 rows and pass, on an M2 Max. */
+  seconds_per_1k_rows: number;
+  measured: boolean;
+  max_length: number;
+  load_in_4bit: boolean;
+  learning_rate: number;
+  head_learning_rate: number | null;
+  recommended: boolean;
+  /** The weights' licence; a fine-tune carries it. */
+  license: string;
+}
+
+export interface TrainerStatus {
+  supported: boolean;
+  reason: string | null;
+  installed: boolean;
+  outdated: boolean;
+  memory_gb: number;
+  disk_free_gb: number;
+  path: string;
+  size_bytes: number;
+}
+
+export interface FineTuneSettings {
+  epochs: number;
+  learning_rate: number;
+  lora_rank: number;
+  /** Share of labelled rows held out for the before/after test. */
+  holdout: number;
+  max_length: number;
+  seed: number;
+}
+
+export type FineTuneStatus = "queued" | "preparing" | "baseline" | "training" | "evaluating" | "ready" | "failed" | "cancelled";
+
+export interface FineTuneSplit {
+  labelled: number;
+  train: number;
+  calibration: number;
+  test: number;
+  records: number;
+}
+
+export interface FineTune {
+  id: string;
+  name: string;
+  /** `ft:<slug>`, how the model is picked everywhere. */
+  model: string;
+  base: string;
+  base_title: string;
+  /** The evaluation the setup was copied from, if any. */
+  experiment_id: string | null;
+  experiment_name: string | null;
+  /** Dataset, inputs and questions; `models` are compared against on the held-out rows. */
+  config: ExperimentConfig | null;
+  dataset_id: string;
+  dataset_name: string;
+  questions: string[];
+  settings: FineTuneSettings;
+  status: FineTuneStatus;
+  progress: {
+    /** loading | baseline | training | calibrating | exporting */
+    stage: string | null;
+    step: number;
+    total_steps: number;
+    epoch: number;
+    elapsed_s: number;
+    loss: [number, number][];
+    /** Rows per step and training records (0 until training starts). */
+    batch_size: number;
+    records: number;
+    /** The base model's download while loading: bytes of `total` (both 0 when it was cached). */
+    download?: { done: number; total: number; files_done: number; files: number; cached: number; elapsed_s: number; error: string | null } | null;
+  };
+  split: FineTuneSplit | null;
+  /** Accuracy / calibration error on the calibration rows, before and after training. */
+  before: { accuracy: number; ece: number } | null;
+  after: { accuracy: number; ece: number } | null;
+  eval_experiment_id: string | null;
+  test_dataset_id: string | null;
+  size_bytes: number;
+  train_seconds: number | null;
+  /** Weights of the model, and how many training changes. */
+  parameters: number | null;
+  trainable_parameters: number | null;
+  has_analysis: boolean;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface FineTuneInput {
+  name: string;
+  base: string;
+  /** Dataset, inputs and questions as for an evaluation; `models` are compared against. */
+  config: ExperimentConfig;
+  source_experiment_id?: string | null;
+  settings: FineTuneSettings;
+}
+
+export interface FineTunePreview {
+  split: FineTuneSplit;
+  questions: { id: string; instructions: string; kind: "choice" | "binary"; labels: Record<string, number> }[];
+  errors: string[];
+  warnings: string[];
+  /** Local models of the evaluation re-run on the held-out rows. */
+  compare_with: string[];
+}
+
+/** A calibration row's answer before and after training. */
+export interface AnalysisRow {
+  row: number;
+  question: string;
+  text: string;
+  /** Label (choice) or true/false (yes/no). */
+  gold: string | boolean;
+  before: string | boolean | null;
+  before_p: number | null;
+  after: string | boolean | null;
+  after_p: number | null;
+}

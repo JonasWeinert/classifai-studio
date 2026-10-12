@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { Panes } from "../components/Panes";
-import { ArrowDown, ArrowUp, ChartColumnBig, Link2, ChevronLeft, ChevronRight, FlaskConical, Pencil, Search, SquareArrowOutUpRight, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChartColumnBig, Link2, ChevronLeft, ChevronRight, FlaskConical, Pencil, Search, SlidersHorizontal, SquareArrowOutUpRight, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Distribution } from "../components/charts";
 import { Badge, Button, CardHeader, ErrorNote, Input, Modal, PageHeader, Spinner, Tooltip } from "../components/ui";
@@ -139,6 +139,11 @@ export function DatasetDetail({ id }: { id: string }) {
             </div>
             <Tooltip content="Delete dataset" side="bottom">
               <Button variant="ghost" icon={<Trash2 className="size-3.5" />} onClick={() => setConfirm(true)} />
+            </Tooltip>
+            <Tooltip content="Train a local model on this dataset's labels" side="bottom">
+              <Button variant="ghost" icon={<SlidersHorizontal className="size-3.5" />} onClick={() => go({ page: "finetune-new", datasetId: id })}>
+                Fine-tune…
+              </Button>
             </Tooltip>
             <Button variant="primary" icon={<FlaskConical className="size-3.5" />} onClick={() => go({ page: "new-experiment", datasetId: id })}>
               New evaluation

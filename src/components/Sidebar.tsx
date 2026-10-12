@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { Boxes, Database, Layers, Tag, Rows3, FlaskConical, Search, Settings, SlidersHorizontal, Zap } from "lucide-react";
+import { Boxes, Database, Layers, Tag, Rows3, FlaskConical, Search, Settings, SlidersHorizontal, Zap, BookOpen } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useApp, type Route } from "../lib/app";
 import { usd } from "../lib/format";
@@ -30,13 +30,16 @@ const SECTIONS: { title: string; items: Item[] }[] = [
     title: "Models",
     items: [
       { page: "models", label: "Models", icon: <Boxes />, match: ["models"] },
-      { page: "finetune", label: "Fine-tune", icon: <SlidersHorizontal />, match: ["finetune"], badge: "Preview" },
+      { page: "finetune", label: "Fine-tune", icon: <SlidersHorizontal />, match: ["finetune", "finetune-new", "finetune-run"] },
     ],
   },
   // Pinned to the bottom of the list.
   {
     title: "",
-    items: [{ page: "settings", label: "Settings", icon: <Settings />, match: ["settings", "engine", "about", "licenses"], badge: "⌘," }],
+    items: [
+      { page: "docs", label: "Guide", icon: <BookOpen />, match: ["docs"] },
+      { page: "settings", label: "Settings", icon: <Settings />, match: ["settings", "engine", "about", "licenses"], badge: "⌘," },
+    ],
   },
 ];
 

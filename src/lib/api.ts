@@ -47,6 +47,12 @@ import type {
   Row,
   RunEvent,
   ValueCount,
+  FineTune,
+  FineTuneBase,
+  FineTuneInput,
+  FineTunePreview,
+  TrainerStatus,
+  AnalysisRow,
 } from "./types";
 
 import { track } from "./modelStatus";
@@ -192,6 +198,20 @@ export const api = {
   settingsSave: (input: AppSettings) => call<AppSettings>("settings_save", { input }),
   budget: () => call<BudgetStatus>("budget_status"),
   trackRecord: () => call<TrackRecord[]>("models_track_record"),
+
+  fineTuneBases: () => call<FineTuneBase[]>("finetune_bases"),
+  trainerStatus: () => call<TrainerStatus>("trainer_status"),
+  trainerInstall: () => call<TrainerStatus>("trainer_install"),
+  trainerUninstall: () => call<TrainerStatus>("trainer_uninstall"),
+  fineTunes: () => call<FineTune[]>("finetune_list"),
+  fineTune: (id: string) => call<FineTune>("finetune_get", { id }),
+  fineTunePreview: (config: ExperimentConfig, holdout: number, base?: string) => call<FineTunePreview>("finetune_preview", { config, holdout, base }),
+  fineTuneCreate: (input: FineTuneInput) => call<FineTune>("finetune_create", { input }),
+  fineTuneCancel: (id: string) => call<void>("finetune_cancel", { id }),
+  fineTuneDelete: (id: string) => call<void>("finetune_delete", { id }),
+  fineTuneLog: (id: string) => call<string>("finetune_log", { id }),
+  fineTuneFolder: (id: string) => call<string>("finetune_folder", { id }),
+  fineTuneAnalysis: (id: string) => call<{ rows: AnalysisRow[] }>("finetune_analysis", { id }),
 };
 
 export const events = {
@@ -199,6 +219,9 @@ export const events = {
   pull: (cb: (e: PullEvent) => void) => listenTo<PullEvent>("model://pull", cb),
   progress: (cb: (e: RunEvent) => void) => listenTo<RunEvent>("experiment://progress", cb),
   hfProgress: (cb: (e: HfProgress) => void) => listenTo<HfProgress>("hf://progress", cb),
+  /** Every change of a fine-tune (the whole fine-tune). */
+  fineTune: (cb: (f: FineTune) => void) => listenTo<FineTune>("finetune://progress", cb),
+  trainerLog: (cb: (line: string) => void) => listenTo<string>("finetune://install-log", cb),
   /** Native menu items: "import", "new-experiment", "settings", "palette", "back", "nav:<page>". */
   menu: (cb: (action: string) => void) => listenTo<string>("menu://action", cb),
 };

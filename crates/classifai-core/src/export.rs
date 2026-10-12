@@ -69,6 +69,7 @@ fn kind_name(k: TaskKind) -> &'static str {
 fn model_kind(m: &str) -> String {
     match parse_model_id(m) {
         Ok(ModelRef::Cloud { provider, .. }) => format!("cloud, provider {provider}"),
+        Ok(ModelRef::FineTuned(_)) => "local, fine-tuned in ClassifAI Studio (llama.cpp)".into(),
         _ => "local (Ollaya)".into(),
     }
 }

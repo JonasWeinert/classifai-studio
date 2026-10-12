@@ -19,7 +19,7 @@ import { useApp } from "../lib/app";
 import { modelColor, ms, shortModel, usd } from "../lib/format";
 import { handoff, type Origin } from "../lib/handoff";
 import { load, save } from "../lib/persist";
-import { consensusKey, SAMPLE_TEXT, useQuestionDraft } from "../lib/questionDraft";
+import { consensusKey, SAMPLE_TEXT, useQuestionDraft, type QDraft } from "../lib/questionDraft";
 import type { AnyQuestion } from "../lib/types";
 import { classifyRouted, type RoutedItem, type RoutedResult } from "../lib/routing";
 import { isLlm, supportsFreeText } from "../lib/models";
@@ -53,7 +53,8 @@ export function Playground() {
   const saved = useMemo(() => load<Saved | null>("quick", null), []);
   const incoming = useMemo(() => handoff.take(), []);
   const [text, setText] = useState(incoming?.text ?? saved?.text ?? SAMPLE_TEXT);
-  const [selected, setSelected] = useState<string[]>(saved?.selected ?? []);
+  const incomingModels = useMemo(() => handoff.takeModels(), []);
+  const [selected, setSelected] = useState<string[]>(incomingModels ?? saved?.selected ?? []);
   const [slots, setSlots] = useState<Slot[]>(incoming ? [] : (saved?.slots ?? []).filter((x) => !x.loading));
   const [titles, setTitles] = useState<Record<string, string>>(saved?.titles ?? {});
   const [ranWith, setRanWith] = useState<string | null>(incoming ? null : saved?.ranWith ?? null);
@@ -71,7 +72,7 @@ export function Playground() {
       const t = composeInput(row, origin.inputCols);
       setText(t);
       setOrigin({ ...origin, row: i, text: t });
-      draft.setQs(draft.qs.map((q) => (q.column ? { ...q, expected: row[q.column] ?? "" } : q)));
+      draft.setQs(draft.qs.map((q) => (q.column ? { ...q, expected: q.labelOf ? q.labelOf[(row[q.column] ?? "").trim()] ?? "" : row[q.column] ?? "" } : q)));
       setSlots([]);
       setRanWith(null);
     },
@@ -109,6 +110,7 @@ export function Playground() {
     if (incoming?.questions) {
       draft.setQs(incoming.questions);
       draft.setSet(null);
+      if (incoming.context !== undefined) draft.setShared(incoming.context);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incoming]);
@@ -214,6 +216,7 @@ export function Playground() {
             }
           >
             <Textarea rows={5} value={text} onChange={(e) => setText(e.target.value)} placeholder="Paste a message, ticket, abstract, review…" />
+            {fromRow && <GroundTruth qs={draft.qs} />}
             <SharedContext />
             {fromRow?.inputCols && (
               <EntryPicker
@@ -410,5 +413,22 @@ function SlotLoading({ model }: { model: string }) {
     </div>
   ) : (
     <div className="h-14 rounded-[8px] shimmer" />
+  );
+}
+
+/** The opened row's ground truth for each question that has one, right under the input. */
+function GroundTruth({ qs }: { qs: QDraft[] }) {
+  const shown = qs.filter((q) => q.column && q.expected !== undefined);
+  if (shown.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[12px]">
+      <span className="text-faint">Ground truth</span>
+      {shown.map((q) => (
+        <span key={q.key} title={q.text} className="inline-flex max-w-[20rem] items-center gap-1.5 rounded-full bg-good-soft px-2.5 py-0.5">
+          <span className="truncate text-muted-foreground">{q.column}</span>
+          <b className="font-semibold text-foreground">{q.expected || "—"}</b>
+        </span>
+      ))}
+    </div>
   );
 }

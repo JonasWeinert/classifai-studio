@@ -30,6 +30,7 @@ pub mod hf;
 pub mod labelling;
 pub mod llm;
 pub mod export;
+pub mod finetune;
 pub mod ollaya;
 pub mod providers;
 pub mod questions;

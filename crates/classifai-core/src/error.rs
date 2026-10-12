@@ -24,6 +24,8 @@ pub enum Error {
     NotFound(String),
     #[error("system keychain: {0}")]
     Keychain(String),
+    #[error("cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -44,6 +46,7 @@ impl Error {
             Error::Invalid(_) => "INVALID",
             Error::NotFound(_) => "NOT_FOUND",
             Error::Keychain(_) => "KEYCHAIN",
+            Error::Cancelled => "CANCELLED",
         }
     }
 }

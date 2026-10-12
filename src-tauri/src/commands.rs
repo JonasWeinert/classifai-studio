@@ -16,6 +16,7 @@ use classifai_core::spreadsheet::{self, SheetPreview};
 use classifai_core::decider::{ProviderTest, UsageContext};
 use classifai_core::engine::EngineStatus;
 use classifai_core::eval::Report;
+use classifai_core::finetune::{self, Analysis, Base, FineTune, FineTuneInput, Preview, TrainerStatus, BASES};
 use classifai_core::export;
 use classifai_core::ollaya::{LocalModel, PresetSummary, Routing, Usage};
 use classifai_core::providers::{CloudModelInput, CloudModelView, ProviderInput, ProviderView};
@@ -102,9 +103,19 @@ pub async fn engine_stop(state: State<'_, AppState>) -> Result<EngineStatus> {
 
 // ---- models -------------------------------------------------------------------------------
 
+/// Ollaya's models, then the fine-tuned ones (`ft:<slug>`). Fine-tuned models are listed even
+/// when Ollaya is offline.
 #[tauri::command]
 pub async fn models_installed(state: State<'_, AppState>) -> Result<Vec<LocalModel>> {
-    state.client().tags().await
+    let finetuned = state.finetunes.local_models();
+    match state.client().tags().await {
+        Ok(mut models) => {
+            models.extend(finetuned);
+            Ok(models)
+        }
+        Err(_) if !finetuned.is_empty() => Ok(finetuned),
+        Err(e) => Err(e),
+    }
 }
 
 #[tauri::command]
@@ -161,6 +172,14 @@ pub async fn model_pull(app: AppHandle, state: State<'_, AppState>, model: Strin
 
 #[tauri::command]
 pub async fn model_delete(state: State<'_, AppState>, model: String) -> Result<()> {
+    if model.starts_with(finetune::MODEL_PREFIX) {
+        let store = state.store.clone();
+        let id = blocking(move || {
+            store.list_finetunes()?.into_iter().find(|f| f.model == model).map(|f| f.id).ok_or_else(|| Error::NotFound(model))
+        })
+        .await?;
+        return state.finetunes.delete(&id).await;
+    }
     state.client().delete(&model).await
 }
 
@@ -989,4 +1008,109 @@ pub async fn budget_status(state: State<'_, AppState>) -> Result<BudgetStatus> {
 pub async fn models_track_record(state: State<'_, AppState>) -> Result<Vec<TrackRecord>> {
     let store = state.store.clone();
     blocking(move || analysis::track_record(&store)).await
+}
+
+// ---- fine-tuning ----------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn finetune_bases() -> Vec<Base> {
+    BASES.to_vec()
+}
+
+#[tauri::command]
+pub async fn trainer_status(state: State<'_, AppState>) -> Result<TrainerStatus> {
+    let manager = state.finetunes.clone();
+    blocking(move || Ok(manager.trainer.status())).await
+}
+
+/// Install the trainer; output lines go to `finetune://install-log`.
+#[tauri::command]
+pub async fn trainer_install(app: AppHandle, state: State<'_, AppState>) -> Result<TrainerStatus> {
+    if state.trainer_installing.swap(true, Ordering::SeqCst) {
+        return Err(Error::invalid("the trainer is already being installed"));
+    }
+    let flag = state.trainer_installing.clone();
+    let manager = state.finetunes.clone();
+    let emitter = app.clone();
+    let result = manager
+        .trainer
+        .install(&move |line: String| {
+            let _ = emitter.emit("finetune://install-log", line);
+        })
+        .await;
+    flag.store(false, Ordering::SeqCst);
+    result?;
+    Ok(manager.trainer.status())
+}
+
+#[tauri::command]
+pub async fn trainer_uninstall(state: State<'_, AppState>) -> Result<TrainerStatus> {
+    let manager = state.finetunes.clone();
+    if manager.trainer_busy() {
+        return Err(Error::invalid("wait for the running fine-tune to finish"));
+    }
+    manager.server.restart().await;
+    manager.trainer.uninstall().await?;
+    Ok(manager.trainer.status())
+}
+
+#[tauri::command]
+pub async fn finetune_list(state: State<'_, AppState>) -> Result<Vec<FineTune>> {
+    let store = state.store.clone();
+    blocking(move || store.list_finetunes()).await
+}
+
+#[tauri::command]
+pub async fn finetune_get(state: State<'_, AppState>, id: String) -> Result<FineTune> {
+    let store = state.store.clone();
+    blocking(move || store.get_finetune(&id)).await
+}
+
+#[tauri::command]
+pub async fn finetune_preview(state: State<'_, AppState>, config: ExperimentConfig, holdout: f64, base: Option<String>) -> Result<Preview> {
+    let store = state.store.clone();
+    blocking(move || finetune::preview(&store, &config, holdout, base.as_deref())).await
+}
+
+/// Queue a fine-tune. Every change goes to `finetune://progress` (the whole fine-tune).
+#[tauri::command]
+pub async fn finetune_create(app: AppHandle, state: State<'_, AppState>, input: FineTuneInput) -> Result<FineTune> {
+    let emitter = app.clone();
+    let f = state.finetunes.create(
+        input,
+        Arc::new(move |f: &FineTune| {
+            let _ = emitter.emit("finetune://progress", f.clone());
+        }),
+    )?;
+    let _ = app.emit("finetune://progress", f.clone());
+    Ok(f)
+}
+
+#[tauri::command]
+pub fn finetune_cancel(state: State<'_, AppState>, id: String) {
+    state.finetunes.cancel(&id);
+}
+
+#[tauri::command]
+pub async fn finetune_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    state.finetunes.delete(&id).await
+}
+
+/// The last lines of the trainer's output for a fine-tune.
+#[tauri::command]
+pub async fn finetune_log(state: State<'_, AppState>, id: String) -> Result<String> {
+    let manager = state.finetunes.clone();
+    blocking(move || Ok(manager.log_tail(&id, 200))).await
+}
+
+/// Every calibration row's answer before and after training.
+#[tauri::command]
+pub async fn finetune_analysis(state: State<'_, AppState>, id: String) -> Result<Analysis> {
+    let manager = state.finetunes.clone();
+    blocking(move || manager.analysis(&id)).await
+}
+
+#[tauri::command]
+pub fn finetune_folder(state: State<'_, AppState>, id: String) -> String {
+    state.finetunes.job_folder(&id).display().to_string()
 }

@@ -41,6 +41,8 @@ export interface QDraft {
   column?: string;
   /** That column's value in the opened row, shown next to the answers. */
   expected?: string;
+  /** Raw column value → the answer it stands for (labels and aliases; yes/no for a yes/no question), when known from an evaluation. */
+  labelOf?: Record<string, string>;
   /** Stable id, so follow-ups keep pointing at this question when it is reworded. */
   rid?: string;
   /** Follow-up: ask only when the question with rid `parent` got one of `answers`. */

@@ -24,6 +24,9 @@ export type Route =
   | { page: "experiment"; id: string }
   | { page: "models"; tab?: "local" | "cloud" | "usage" }
   | { page: "finetune" }
+  | { page: "finetune-new"; datasetId?: string; fromExperiment?: string }
+  | { page: "docs"; topic?: string }
+  | { page: "finetune-run"; id: string }
   | { page: "engine" }
   | { page: "settings"; tab?: "general" | "engine" | "accounts" }
   | { page: "compare"; a: string; b?: string }
@@ -111,9 +114,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    refreshEngine().then((s) => {
-      if (s?.running) refreshModels();
-    });
+    // Fine-tuned models are listed even while Ollaya is offline.
+    refreshEngine().then(() => refreshModels());
     const t = setInterval(refreshEngine, 8000);
     return () => clearInterval(t);
   }, [refreshEngine, refreshModels]);
@@ -145,6 +147,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const un = events.pull((e) => setPulls((p) => ({ ...p, [e.model]: e })));
     return () => void un.then((f) => f());
   }, []);
+
+  // A finished fine-tune becomes a model: list it, and say so wherever the user is.
+  const fineTuneStatus = useRef<Record<string, string>>({});
+  useEffect(() => {
+    const un = events.fineTune((f) => {
+      const before = fineTuneStatus.current[f.id];
+      fineTuneStatus.current[f.id] = f.status;
+      if (before === f.status) return;
+      if (f.status === "evaluating") refreshModels();
+      if (f.status === "ready") toast(`${f.name} is trained and ready to use`, "good");
+      if (f.status === "failed") toast(`Fine-tune “${f.name}” failed`, "bad");
+    });
+    return () => void un.then((f) => f());
+  }, [refreshModels, toast]);
 
   const pull = useCallback(
     async (model: string) => {

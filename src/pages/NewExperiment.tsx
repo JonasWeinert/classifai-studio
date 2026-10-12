@@ -1,6 +1,9 @@
 import { cn } from "@/lib/utils";
 import { Panes } from "../components/Panes";
-import { AlertCircle, Info, Merge, Play, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, Info, Merge, Play, Plus, Sparkles, Trash2 } from "lucide-react";
+import { TrainerSetup } from "../components/FineTunePieces";
+import { BasePicker, fitsMemory, PlanCard, TrainingOptions, useFineTuneSetup } from "../components/FineTuneSetup";
+import { describeError } from "../lib/errors";
 import { BranchRow, BranchTag } from "../components/FollowUps";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ModelPicker } from "../components/ModelPicker";
@@ -11,7 +14,7 @@ import { guessInputColumns, guessLabelColumn } from "../lib/columns";
 import { modelColor, shortModel, usd } from "../lib/format";
 import { defaultInstructions, guessPositive, labelKey } from "../lib/labels";
 import { slugId } from "../lib/questions";
-import type { Dataset, Estimate, Experiment, ExperimentConfig, LabelSpec, QuestionSet, TaskKind, ValueCount } from "../lib/types";
+import type { Dataset, Estimate, Experiment, ExperimentConfig, FineTuneBase, FineTunePreview, LabelSpec, QuestionSet, TaskKind, TrainerStatus, ValueCount } from "../lib/types";
 
 interface LabelRow extends ValueCount {
   include: boolean;
@@ -151,14 +154,33 @@ function loadLabels(q: QDraft, vc: ValueCount[]): Partial<QDraft> {
 const fmtTime = (s: number) => (s < 60 ? `~${Math.max(1, Math.round(s))} s` : s < 3600 ? `~${Math.round(s / 60)} min` : `~${(s / 3600).toFixed(1)} h`);
 const fmtCost = (v: number) => (v === 0 ? "free" : `$${v < 0.01 ? v.toFixed(4) : v.toFixed(2)}`);
 
-export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string }) {
+/**
+ * The evaluation setup. In `finetune` mode the same data and question setup feeds a fine-tune:
+ * models become the ones to compare against on the held-out rows, and the run options are the
+ * base model, hold-out and training.
+ */
+export function NewExperiment({ datasetId: datasetIdProp, mode = "evaluate", fromExperiment: fromExperimentProp }: { datasetId?: string; mode?: "evaluate" | "finetune"; fromExperiment?: string }) {
   const { go, models, toast, route } = useApp();
+  const tuning = mode === "finetune";
   const r = route.page === "new-experiment" ? route : null;
   const datasetId = datasetIdProp ?? r?.datasetId;
-  const fromExperiment = r?.fromExperiment;
+  const fromExperiment = fromExperimentProp ?? r?.fromExperiment;
   const fromSet = r?.fromSet;
 
-  const datasets = useAsync(() => api.datasets(), []);
+  const allDatasets = useAsync(() => api.datasets(), []);
+  // Fine-tune: never offer the held-out rows of another fine-tune for training.
+  const heldOut = useAsync(() => (tuning ? api.fineTunes().then((l) => new Set(l.map((f) => f.test_dataset_id).filter(Boolean) as string[])) : Promise.resolve(new Set<string>())), [tuning]);
+  const datasets = { ...allDatasets, data: allDatasets.data?.filter((d) => !heldOut.data?.has(d.id)) ?? null };
+  const ft = useFineTuneSetup();
+  const bases = useAsync(() => (tuning ? api.fineTuneBases() : Promise.resolve([] as FineTuneBase[])), [tuning]);
+  const trainerQ = useAsync(() => (tuning ? api.trainerStatus() : Promise.resolve(null)), [tuning]);
+  const [trainerOverride, setTrainer] = useState<TrainerStatus | null>(null);
+  const trainer = trainerOverride ?? trainerQ.data;
+  const base = bases.data?.find((b) => b.id === ft.baseId) ?? null;
+  const [modelsTouched, setModelsTouched] = useState(false);
+  const [ftName, setFtName] = useState("");
+  const [preview, setPreview] = useState<FineTunePreview | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const sets = useAsync(() => api.questionSets(), []);
   const [dsId, setDsId] = useState<string | undefined>(datasetId);
   const ds: Dataset | undefined = datasets.data?.find((d) => d.id === dsId);
@@ -323,8 +345,17 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
   }, [labelCols.join("|"), ds, nameTouched]);
 
   useEffect(() => {
+    if (tuning) return;
     if (selModels.length === 0 && models.length && !fromExperiment) setSelModels(models.slice(0, 2).map((m) => m.name));
-  }, [models, selModels.length, fromExperiment]);
+  }, [models, selModels.length, fromExperiment, tuning]);
+
+  // Fine-tune: compare against the base's own Ollaya model when it is installed (until the user picks).
+  useEffect(() => {
+    if (!tuning || modelsTouched || fromExperiment) return;
+    const o = base?.ollaya;
+    const name = o && (models.find((m) => m.name === o) ?? models.find((m) => m.name === `${o}:latest`))?.name;
+    setSelModels(name ? [name] : []);
+  }, [tuning, base, models, modelsTouched, fromExperiment]);
 
   const update = (key: number, patch: Partial<QDraft>) => setQs((all) => all.map((q) => (q.key === key ? { ...q, ...patch } : q)));
 
@@ -350,9 +381,9 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
       if (q.labels && q.kind === "binary" && included.length === 2 && !included.some((l) => l.value === q.positive)) p.push({ field, msg: "Pick the positive label" });
       if (q.labels && q.kind === "choice" && (included.length < 2 || included.length > 255)) p.push({ field, msg: `Include 2–255 labels (${included.length} now)` });
     });
-    if (selModels.length === 0) p.push({ field: "models", msg: "Pick at least one model" });
+    if (selModels.length === 0 && !tuning) p.push({ field: "models", msg: "Pick at least one model" });
     return p;
-  }, [ds, inputs.length, qs, labelCols, selModels.length]);
+  }, [ds, inputs.length, qs, labelCols, selModels.length, tuning]);
   const problemsFor = (f: Field) => problems.filter((p) => p.field === f).map((p) => p.msg);
 
   const config: ExperimentConfig | null = useMemo(() => {
@@ -385,12 +416,33 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
         };
       }),
       models: selModels,
-      sample_size: sampleN < eligible ? sampleN : null,
+      sample_size: tuning ? null : sampleN < eligible ? sampleN : null,
     };
-  }, [ds, problems.length, qs, name, labelCols, inputs, context, selModels, sampleN, eligible]);
+  }, [ds, problems.length, qs, name, labelCols, inputs, context, selModels, sampleN, eligible, tuning]);
+
+  // Fine-tune: the split, label counts and warnings for this setup.
+  const previewKey = tuning && config ? JSON.stringify({ ...config, name: "", models: [], h: ft.holdout, b: ft.baseId }) : "";
+  useEffect(() => {
+    if (!tuning || !config) {
+      setPreview(null);
+      return;
+    }
+    let live = true;
+    const t = setTimeout(() => {
+      api
+        .fineTunePreview({ ...config, models: [] }, Number(ft.holdout), ft.baseId)
+        .then((p) => live && (setPreview(p), setPreviewError(null)))
+        .catch((e) => live && setPreviewError(describeError(e).message));
+    }, 300);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewKey]);
 
   // E1: debounced cost / time estimate. The name doesn't change the estimate.
-  const estimateKey = config ? JSON.stringify({ ...config, name: "" }) : "";
+  const estimateKey = config && !tuning ? JSON.stringify({ ...config, name: "" }) : "";
   useEffect(() => {
     if (!config) {
       setEstimate(null);
@@ -439,7 +491,29 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
     }
   };
 
+  const ftDefaultName = ds && base ? `${ds.name} · ${base.title}` : "";
+  const ftErrors = [...(preview?.errors ?? []), ...(base && trainer && !fitsMemory(base, trainer.memory_gb) ? [`${base.title} needs about ${base.min_memory_gb} GB of memory; this Mac has ${Math.round(trainer.memory_gb)} GB.`] : [])];
+  const ftReady = !!trainer?.installed && !trainer.outdated;
+  const startFineTune = async () => {
+    setAttempted(true);
+    if (problems.length) {
+      scrollToProblem();
+      return;
+    }
+    if (!config || !base) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const f = await api.fineTuneCreate({ name: ftName.trim() || ftDefaultName, base: base.id, config, source_experiment_id: fromExperiment ?? null, settings: ft.settings(base) });
+      go({ page: "finetune-run", id: f.id });
+    } catch (e) {
+      setError(e);
+      setBusy(false);
+    }
+  };
+
   const onStart = () => {
+    if (tuning) return void startFineTune();
     setAttempted(true);
     if (problems.length) {
       scrollToProblem();
@@ -455,21 +529,40 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
     loadSet(id);
   };
 
-  if ((datasets.loading && !datasets.data) || prefillLoading) return <Spinner />;
+  if ((allDatasets.loading && !allDatasets.data) || prefillLoading || heldOut.loading) return <Spinner />;
   const freeColumns = (ds?.columns ?? []).filter((c) => !labelCols.includes(c) && !inputs.includes(c));
 
   return (
     <>
-      <PageHeader
-        back={{ label: datasetId ? "Dataset" : "Evaluations", onClick: () => (datasetId ? go({ page: "dataset", id: datasetId }) : go({ page: "experiments" })) }}
-        title={fromExperiment ? "Duplicate Evaluation" : "New Evaluation"}
-        subtitle="Run rows through several models and score every question against its ground truth."
-        actions={
-          <Button variant="primary" loading={busy} onClick={onStart} icon={<Play className="size-3.5" />}>
-            Start
-          </Button>
-        }
-      />
+      {tuning ? (
+        <PageHeader
+          back={{ label: "Fine-tune", onClick: () => go({ page: "finetune" }) }}
+          title="New fine-tune"
+          subtitle="Pick the data and questions, hold out rows for the test, compare, then train."
+          actions={
+            <Button variant="primary" loading={busy} disabled={!ftReady} onClick={onStart} icon={<Sparkles className="size-3.5" />}>
+              Start fine-tune
+            </Button>
+          }
+        />
+      ) : (
+        <PageHeader
+          back={{ label: datasetId ? "Dataset" : "Evaluations", onClick: () => (datasetId ? go({ page: "dataset", id: datasetId }) : go({ page: "experiments" })) }}
+          title={fromExperiment ? "Duplicate Evaluation" : "New Evaluation"}
+          subtitle="Run rows through several models and score every question against its ground truth."
+          actions={
+            <Button variant="primary" loading={busy} onClick={onStart} icon={<Play className="size-3.5" />}>
+              Start
+            </Button>
+          }
+        />
+      )}
+      {tuning && trainer && !ftReady && (
+        <div className="mb-7">
+          <TrainerSetup status={trainer} onChange={setTrainer} compact />
+        </div>
+      )}
+      {tuning && <SetupSteps />}
 
       <Panes template="minmax(0,1fr) 260px" className="gap-10">
         <div>
@@ -578,16 +671,34 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
             )}
           </Section>
 
-          <Section title="Models">
+          {tuning && bases.data && <BasePicker bases={bases.data} value={ft.baseId} onChange={ft.setBaseId} records={preview?.split.records ?? 0} epochs={ft.epochs} memory={trainer?.memory_gb ?? 0} />}
+
+          <Section
+            title={tuning ? "Compare against" : "Models"}
+            subtitle={
+              tuning
+                ? "These answer the held-out rows before training starts: the bar the fine-tune has to beat. Afterwards the fine-tune answers the same rows in the same evaluation. Optional."
+                : undefined
+            }
+          >
             <div id="field-models">
-              <ModelPicker value={selModels} onChange={setSelModels} colors={modelColor} />
+              <ModelPicker
+                value={selModels}
+                onChange={(v) => {
+                  setModelsTouched(true);
+                  setSelModels(v);
+                }}
+                colors={modelColor}
+              />
               <div className="mt-2">
                 <FieldProblems msgs={problemsFor("models")} />
               </div>
             </div>
           </Section>
 
-          <Section title="Run">
+          {tuning && <TrainingOptions s={ft} base={base} name={ftName} onName={setFtName} defaultName={ftDefaultName} />}
+
+          {!tuning && <Section title="Run">
             <FormRow label="Rows to evaluate:" hint={`A fixed random sample of up to ${eligible.toLocaleString()} labelled rows, so reruns compare like with like.`}>
               <div className="flex max-w-xs gap-1.5">
                 <Input type="number" min={1} value={sample} onChange={setSample} />
@@ -604,10 +715,26 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
                 }}
               />
             </FormRow>
-          </Section>
+          </Section>}
         </div>
 
-        {/* summary */}
+        {tuning ? (
+          <aside className="sticky top-6 space-y-3 self-start">
+            <PlanCard
+              preview={preview}
+              base={base}
+              epochs={ft.epochs}
+              compare={selModels}
+              errors={ftErrors}
+              canStart={ftReady && !!config && !!preview && ftErrors.length === 0}
+              starting={busy}
+              onStart={onStart}
+              pending={problems.map((p) => p.msg)}
+            />
+            {previewError && <ErrorNote>{previewError}</ErrorNote>}
+            {error != null && <ErrorNote error={error} />}
+          </aside>
+        ) : (
         <aside className="sticky top-6 space-y-3 text-[12.5px]">
           <div className="text-[13px] font-semibold">Summary</div>
           <dl className="space-y-2">
@@ -652,6 +779,7 @@ export function NewExperiment({ datasetId: datasetIdProp }: { datasetId?: string
           {attempted && problems.length > 0 && <div className="text-[11.5px] text-faint">Fix these to start.</div>}
           {error != null && <ErrorNote error={error} />}
         </aside>
+        )}
       </Panes>
 
       <Modal
@@ -984,5 +1112,21 @@ function Row({ k, v }: { k: string; v: ReactNode }) {
       <dt className="text-muted-foreground">{k}</dt>
       <dd className="min-w-0 truncate text-right font-medium">{v}</dd>
     </div>
+  );
+}
+
+/** The fine-tune setup's steps, so the order of what happens is clear up front. */
+function SetupSteps() {
+  const steps = ["Data", "Questions", "Base model", "Compare against", "Hold-out and training"];
+  return (
+    <ol className="mb-7 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted-foreground">
+      {steps.map((s, i) => (
+        <li key={s} className="flex items-center gap-2">
+          {i > 0 && <span className="h-px w-5 bg-border-strong" />}
+          <span className="grid size-5 place-items-center rounded-full bg-primary/10 text-[10.5px] font-semibold text-primary">{i + 1}</span>
+          {s}
+        </li>
+      ))}
+    </ol>
   );
 }

@@ -117,6 +117,7 @@ function LocalModels() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 text-[13px] font-medium">
                   {m.name}
+                  {m.details.family === "fine-tune" && <Badge tone="accent">Fine-tuned</Badge>}
                   <TrackBadge r={track.get(m.name.replace(/:latest$/, ""))} />
                 </div>
                 <div className="text-[11.5px] text-muted-foreground">{[m.details.format, m.details.parameter_size, m.details.quantization_level].filter(Boolean).join(" · ")}</div>

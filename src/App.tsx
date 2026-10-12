@@ -16,6 +16,8 @@ import { Datasets } from "./pages/Datasets";
 import { ExperimentDetail } from "./pages/ExperimentDetail";
 import { Experiments } from "./pages/Experiments";
 import { FineTune } from "./pages/FineTune";
+import { Docs } from "./pages/Docs";
+import { FineTuneRun } from "./pages/FineTuneRun";
 import { Models } from "./pages/Models";
 import { NewExperiment } from "./pages/NewExperiment";
 import { Onboarding } from "./pages/Onboarding";
@@ -207,6 +209,9 @@ export default function App() {
               {route.page === "review" && <Review id={route.id} question={route.question} />}
               {route.page === "models" && <Models />}
               {route.page === "finetune" && <FineTune />}
+              {route.page === "finetune-new" && <NewExperiment key={`ft-${route.fromExperiment ?? route.datasetId ?? "new"}`} mode="finetune" datasetId={route.datasetId} fromExperiment={route.fromExperiment} />}
+              {route.page === "docs" && <Docs key={route.topic ?? "docs"} topic={route.topic} />}
+              {route.page === "finetune-run" && <FineTuneRun key={route.id} id={route.id} />}
               {(route.page === "settings" || route.page === "engine") && <Settings />}
               {route.page === "about" && <About />}
               {route.page === "licenses" && <Licenses />}

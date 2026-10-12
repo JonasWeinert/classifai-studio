@@ -71,11 +71,18 @@ code.
 
 ### Phase 3: fine-tuning
 
-- **3a Calibration (cheap, CPU):** fit temperatures on the user's labels and write a derived model
-  through Ollaya's `/api/create` (`calibration.temperature_by_options`). No weights change.
-- **3b Head training:** train the decision head on frozen encoder features (Laya/ModernBERT).
-- **3c LoRA:** adapter training for decoders; GPU required. Export back into Ollaya as a new model.
-- Automatic held-out split and a before/after experiment.
+Shipped as LoRA training through Unsloth (MLX on Apple silicon), not through Ollaya: Ollaya can't
+load new weights (`/api/create` takes calibration temperatures only). See `finetune.rs`.
+
+- A fine-tune starts from an evaluation (dataset, questions, label columns) and a base: Laya
+  English/multilingual, Clef Flash, or Qwen3.5 0.8B/2B with a new Clef-style head.
+- Split: held-out test (default 20%), calibration (~10% of the rest, temperatures), train.
+- Exported as GGUF and served by llama.cpp's `/v1/systemone` (router mode); models are `ft:<slug>`.
+- After training, an evaluation on the held-out rows against the base's Ollaya model and the
+  source evaluation's local models.
+- Next: calibration-only for Ollaya models (`/api/create`), training from labelling sessions
+  directly, active learning (label the rows the fine-tune is least sure about), LLM-labelled
+  training data.
 
 ### Phase 4: collaboration and integrations (exploratory)
 

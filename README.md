@@ -42,6 +42,8 @@ ClassifAI Studio works with two kinds of models and treats them the same way:
 
 **Bulk.** Answer the same questions for many entries with one model and save the answers as a dataset or CSV.
 
+**Fine-tuning.** Train a decision model on the labels of an evaluation, on your Mac's GPU. Pick a base (Laya English or multilingual, Clef, or a Qwen3.5 language model that gets a new decision head); most labelled rows train it, some calibrate its confidence, and a held-out share tests it against the models you started from. The result is a model like any other (`ft:<name>`) in the Playground, Bulk and evaluations. Training uses [Unsloth](https://github.com/unslothai/unsloth) with Apple's MLX and the models run in [llama.cpp](https://github.com/ggml-org/llama.cpp); both are installed on request into the app's own folder (about 1.5 GB) and run as separate processes. Unsloth's decision-model code is AGPL-3.0 and is not part of ClassifAI Studio. Apple silicon and macOS 14 or later.
+
 **Data.** Import CSV, TSV, JSON and JSONL, Excel and OpenDocument workbooks, datasets from the Hugging Face Hub (with sampling and filters), and folders of Word documents, PDFs, text files and images.
 
 **Costs and privacy.** Local models are free and nothing leaves your Mac. For cloud models you set the price per token, see the spend per model, and can set a monthly budget. API keys are kept in the macOS Keychain.
@@ -127,3 +129,5 @@ classifai export <experiment-id> report.html
 ClassifAI Studio is released under the [MIT License](LICENSE). Copyright © 2026 Jonas Weinert.
 
 The open source packages it uses are listed, with their licenses, under About → Open source licenses in the app.
+
+Some software is not part of the app but installed when you ask for it, from its own source: the Ollaya engine (Apache-2.0) and, for fine-tuning, a Python environment with Unsloth (its decision-model code is AGPL-3.0; it runs as a separate program and is not included or modified), unsloth-zoo (LGPL-3.0), PyTorch, MLX and llama.cpp. The same page lists them. A fine-tuned model's weights derive from its base model (Laya, Clef and Qwen3.5 are Apache-2.0); each fine-tune's folder has a `NOTICE.txt` to pass on if you share it.

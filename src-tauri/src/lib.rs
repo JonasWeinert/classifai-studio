@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use classifai_core::decider::Decider;
 use classifai_core::engine::Engine;
+use classifai_core::finetune;
 use classifai_core::ollaya::Client;
 use classifai_core::secrets::KeychainSecrets;
 use classifai_core::store::Store;
@@ -22,6 +23,10 @@ pub struct AppState {
     pub running: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// Cancel flag of the Hugging Face import in progress.
     pub hf_cancel: Arc<AtomicBool>,
+    /// Fine-tunes, the trainer environment and the server for fine-tuned models.
+    pub finetunes: Arc<finetune::Manager>,
+    /// The trainer is being installed (only one install at a time).
+    pub trainer_installing: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -134,14 +139,17 @@ pub fn run() {
                 _ => classifai_core::ollaya::DEFAULT_BASE_URL.to_string(),
             });
             let store = Arc::new(store);
-            let decider = Decider::new(client.clone(), store.clone(), Arc::new(KeychainSecrets));
+            let decider = Arc::new(Decider::new(client.clone(), store.clone(), Arc::new(KeychainSecrets)));
             let engine = Engine::new(&data_dir, client);
+            let finetunes = finetune::Manager::new(&data_dir, store.clone(), decider.clone());
             app.manage(AppState {
                 store,
                 engine: Arc::new(engine),
-                decider: Arc::new(decider),
+                decider,
                 running: Mutex::new(HashMap::new()),
                 hf_cancel: Arc::new(AtomicBool::new(false)),
+                finetunes,
+                trainer_installing: Arc::new(AtomicBool::new(false)),
             });
 
             // Start the engine in the background if it is installed but not running.
@@ -248,6 +256,19 @@ pub fn run() {
             commands::cloud_model_save,
             commands::cloud_model_delete,
             commands::usage_summary,
+            commands::finetune_bases,
+            commands::trainer_status,
+            commands::trainer_install,
+            commands::trainer_uninstall,
+            commands::finetune_list,
+            commands::finetune_get,
+            commands::finetune_preview,
+            commands::finetune_create,
+            commands::finetune_cancel,
+            commands::finetune_delete,
+            commands::finetune_log,
+            commands::finetune_folder,
+            commands::finetune_analysis,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -255,7 +276,9 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 let state = app.state::<AppState>();
                 let engine = state.engine.clone();
+                let server = state.finetunes.server.clone();
                 tauri::async_runtime::block_on(async move {
+                    server.restart().await;
                     let _ = engine.stop().await;
                 });
             }

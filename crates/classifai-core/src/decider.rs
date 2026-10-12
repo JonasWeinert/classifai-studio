@@ -5,7 +5,7 @@
 //! The decider also manages providers, their models and API keys, since keys are cached here.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use indexmap::IndexMap;
@@ -74,6 +74,8 @@ pub struct Decider {
     http: reqwest::Client,
     /// provider id -> key (None: none stored), so the keychain is read once per provider
     keys: Mutex<HashMap<String, Option<String>>>,
+    /// Serves fine-tuned (`ft:`) models; set by [`crate::finetune::Manager`].
+    finetuned: OnceLock<Arc<crate::finetune::Server>>,
 }
 
 fn elapsed_ms(t: Instant) -> f64 {
@@ -87,7 +89,15 @@ impl Decider {
             .user_agent(concat!("ClassifAI/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("reqwest client");
-        Self { ollaya, store, secrets, http, keys: Mutex::new(HashMap::new()) }
+        Self { ollaya, store, secrets, http, keys: Mutex::new(HashMap::new()), finetuned: OnceLock::new() }
+    }
+
+    pub fn set_finetune_server(&self, server: Arc<crate::finetune::Server>) {
+        let _ = self.finetuned.set(server);
+    }
+
+    fn finetune_server(&self) -> Result<&Arc<crate::finetune::Server>> {
+        self.finetuned.get().ok_or_else(|| Error::invalid("fine-tuned models are only available in the app"))
     }
 
     pub fn ollaya(&self) -> &Client {
@@ -151,6 +161,31 @@ impl Decider {
                     quotes: IndexMap::new(),
                 })
             }
+            ModelRef::FineTuned(slug) => {
+                if preset.is_some() {
+                    return Err(Error::invalid("presets are only available for Ollaya models"));
+                }
+                let questions = questions.ok_or_else(|| Error::invalid("add at least one question"))?;
+                if questions.values().any(|q| matches!(q, Question::Text { .. })) {
+                    return Err(Error::invalid(format!("{model} is a decision model and can't answer free-text questions; use an LLM")));
+                }
+                let started = Instant::now();
+                let r = self.finetune_server()?.decide(slug, &state, &questions).await?;
+                let latency_ms = elapsed_ms(started);
+                self.log(ctx, model, r.usage, 0.0);
+                Ok(Decision {
+                    model_answered: model.to_string(),
+                    answers: r.answers,
+                    refused: r.refused,
+                    routing: None,
+                    usage: r.usage,
+                    cost_usd: 0.0,
+                    latency_ms,
+                    load_ms: 0.0,
+                    state_truncated: false,
+                    quotes: IndexMap::new(),
+                })
+            }
             ModelRef::Cloud { provider, model: name } => {
                 if preset.is_some() {
                     return Err(Error::invalid("presets are only available for local models"));
@@ -188,6 +223,7 @@ impl Decider {
     pub async fn load(&self, model: &str) -> Result<()> {
         match parse_model_id(model)? {
             ModelRef::Local(name) => self.ollaya.load(name).await.map(|_| ()),
+            ModelRef::FineTuned(_) => self.finetune_server()?.ensure().await.map(|_| ()),
             ModelRef::Cloud { provider, model } => {
                 if let Some(e) = self.store.budget_block()? {
                     return Err(e);

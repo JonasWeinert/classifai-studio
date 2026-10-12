@@ -196,9 +196,17 @@ pub struct CloudModelInput {
 pub enum ModelRef<'a> {
     Local(&'a str),
     Cloud { provider: &'a str, model: &'a str },
+    /// A model fine-tuned in the app (`ft:<slug>`), served by llama.cpp ([`crate::finetune`]).
+    FineTuned(&'a str),
 }
 
 pub fn parse_model_id(id: &str) -> Result<ModelRef<'_>> {
+    if let Some(slug) = id.strip_prefix(crate::finetune::MODEL_PREFIX) {
+        if slug.trim().is_empty() {
+            return Err(Error::invalid("fine-tuned model name is empty"));
+        }
+        return Ok(ModelRef::FineTuned(slug));
+    }
     let Some(rest) = id.strip_prefix('@') else {
         if id.trim().is_empty() {
             return Err(Error::invalid("model name is empty"));
@@ -321,6 +329,7 @@ mod tests {
         }
         assert_eq!(cloud_model_id("openai", "gpt-6-luna"), "@openai/gpt-6-luna");
         assert!(is_cloud_model("@openai/gpt-6-luna") && !is_cloud_model("laya"));
+        assert_eq!(parse_model_id("ft:pubmed-sections").unwrap(), ModelRef::FineTuned("pubmed-sections"));
     }
 
     #[test]

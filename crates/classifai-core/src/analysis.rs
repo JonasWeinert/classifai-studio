@@ -483,7 +483,7 @@ pub fn estimate(store: &Store, config: &ExperimentConfig) -> Result<Estimate> {
         .iter()
         .map(|m| {
             let cost = match parse_model_id(m)? {
-                ModelRef::Local(_) => 0.0,
+                ModelRef::Local(_) | ModelRef::FineTuned(_) => 0.0,
                 ModelRef::Cloud { provider, model } => store
                     .get_cloud_model(provider, model)?
                     .map_or(0.0, |cm| cm.cost(crate::ollaya::Usage { input_tokens: tokens, output_tokens: 0 })),

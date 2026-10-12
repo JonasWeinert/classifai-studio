@@ -1,5 +1,5 @@
 import { CommandPalette, type CommandItem } from "@/components/motion/command-palette";
-import { Boxes, Cloud, Tag, Rows3, Database, FileUp, FlaskConical, Layers, Moon, Plus, Settings, SlidersHorizontal, Sun, Zap } from "lucide-react";
+import { Boxes, Cloud, Tag, Rows3, Database, FileUp, FlaskConical, Layers, Moon, Plus, Settings, SlidersHorizontal, Sun, Zap, BookOpen } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { useApp } from "../lib/app";
@@ -34,6 +34,8 @@ export function Palette({ open, onOpenChange }: { open: boolean; onOpenChange: (
       { id: "nav-cloud", label: "Cloud providers & API keys", group: "Go to", icon: Cloud, keywords: ["openai", "typesafe", "jev", "cloudflare", "key"], onSelect: () => go({ page: "models", tab: "cloud" }) },
       { id: "nav-usage", label: "Usage & cost", group: "Go to", icon: Cloud, keywords: ["spend", "budget", "billing"], onSelect: () => go({ page: "models", tab: "usage" }) },
       { id: "nav-finetune", label: "Fine-tune", group: "Go to", icon: SlidersHorizontal, onSelect: () => go({ page: "finetune" }) },
+      { id: "nav-docs", label: "Guide: how fine-tuning works", group: "Go to", icon: BookOpen, keywords: ["docs", "help", "glossary", "lora", "calibration"], onSelect: () => go({ page: "docs" }) },
+      { id: "new-finetune", label: "New fine-tune", group: "Actions", icon: SlidersHorizontal, onSelect: () => go({ page: "finetune-new" }) },
       ...(import.meta.env.DEV ? [{ id: "nav-onboarding", label: "Show welcome screen (dev)", group: "Go to", icon: Settings, keywords: ["onboarding", "setup", "first launch"], onSelect: () => go({ page: "onboarding" }) }] : []),
       { id: "nav-about", label: "About ClassifAI Studio", group: "Go to", icon: Settings, keywords: ["version", "copyright", "github"], onSelect: () => go({ page: "about" }) },
       { id: "nav-licenses", label: "Open source licenses", group: "Go to", icon: Settings, keywords: ["license", "credits", "attribution"], onSelect: () => go({ page: "licenses" }) },

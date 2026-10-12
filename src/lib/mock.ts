@@ -12,6 +12,9 @@ import type {
   ExperimentConfig,
   LocalModel,
   ModelMetrics,
+  FineTune,
+  FineTuneBase,
+  TrainerStatus,
   PredictionRow,
   Report,
   TaskSpec,
@@ -142,10 +145,10 @@ function predictRow(id: string, e: Experiment, m: string, i: number) {
   }
 }
 
-function seedExperiment(name: string, models: string[], n: number) {
+function seedExperiment(name: string, models: string[], n: number, datasetId = "ds-demo") {
   const config: ExperimentConfig = {
     name,
-    dataset_id: "ds-demo",
+    dataset_id: datasetId,
     input_columns: ["subject", "body"],
     context: "Support tickets from an online shop.",
     tasks: [
@@ -158,7 +161,7 @@ function seedExperiment(name: string, models: string[], n: number) {
   const id = `exp-${experiments.length + 1}`;
   const idx = Array.from({ length: n }, (_, i) => i);
   const e: Experiment = {
-    id, name, dataset_id: "ds-demo", dataset_name: "support_tickets", config,
+    id, name, dataset_id: datasetId, dataset_name: datasets.find((d) => d.id === datasetId)?.name ?? "support_tickets", config,
     status: "completed", error: null, row_indices: idx,
     progress: Object.fromEntries(models.map((m) => [m, n])),
     created_at: new Date(Date.now() - 3600_000 * (experiments.length + 1)).toISOString(),
@@ -386,9 +389,218 @@ function derive(parentId: string, name: string, rows: [number, Row][], source: s
   return d;
 }
 
+
+// ---- fine-tuning ----
+
+const fineTuneBases: FineTuneBase[] = [
+  { id: "laya-en", title: "Laya English", description: "ModernBERT-large encoder with a decision head; what Ollaya runs as laya:en. Fast to train, a good first choice for English text.", repo: "convaiinnovations/laya", subfolder: null, kind: "encoder", params: "421M", ollaya: "laya:en", new_head: false, min_memory_gb: 8, seconds_per_1k_rows: 125, measured: true, max_length: 512, load_in_4bit: false, learning_rate: 1e-4, head_learning_rate: null, recommended: true, license: "Apache-2.0" },
+  { id: "laya-multilingual", title: "Laya multilingual", description: "mmBERT-base encoder with a decision head; what Ollaya runs as laya:multilingual. For text that isn't (only) English.", repo: "convaiinnovations/laya", subfolder: "multilingual", kind: "encoder", params: "322M", ollaya: "laya:multilingual", new_head: false, min_memory_gb: 8, seconds_per_1k_rows: 100, measured: false, max_length: 1024, load_in_4bit: false, learning_rate: 1e-4, head_learning_rate: null, recommended: false, license: "Apache-2.0" },
+  { id: "qwen3.5-0.8b", title: "Qwen3.5 0.8B + new head", description: "A small language model turned into a decision model. Reads longer inputs than Laya; starts from zero, so it needs a few hundred labelled rows.", repo: "unsloth/Qwen3.5-0.8B", subfolder: null, kind: "decoder", params: "0.8B", ollaya: null, new_head: true, min_memory_gb: 16, seconds_per_1k_rows: 400, measured: true, max_length: 2048, load_in_4bit: false, learning_rate: 1e-4, head_learning_rate: 3e-4, recommended: false, license: "Apache-2.0" },
+  { id: "qwen3.5-2b", title: "Qwen3.5 2B + new head", description: "A larger language model turned into a decision model. Slower to train and run; for harder questions and long inputs.", repo: "unsloth/Qwen3.5-2B", subfolder: null, kind: "decoder", params: "2B", ollaya: null, new_head: true, min_memory_gb: 24, seconds_per_1k_rows: 1000, measured: false, max_length: 2048, load_in_4bit: false, learning_rate: 1e-4, head_learning_rate: 3e-4, recommended: false, license: "Apache-2.0" },
+  { id: "clef", title: "Clef Flash", description: "Cloudflare's Qwen3.5-9B decision model; what Ollaya runs as clef. The most accurate base, trained in 4-bit. Takes hours and a lot of memory.", repo: "Cloudflare/clef-flash", subfolder: null, kind: "decoder", params: "9B", ollaya: "clef", new_head: false, min_memory_gb: 48, seconds_per_1k_rows: 4500, measured: false, max_length: 2048, load_in_4bit: true, learning_rate: 5e-5, head_learning_rate: null, recommended: false, license: "Apache-2.0" },
+];
+const trainer: TrainerStatus = { supported: true, reason: null, installed: !fresh && !new URLSearchParams(location.search).has("notrainer"), outdated: false, memory_gb: 32, disk_free_gb: 120, path: "~/Library/Application Support/dev.classifai.app/trainer", size_bytes: fresh ? 0 : 1.5e9 };
+const fineTunes: FineTune[] = [];
+const analyses: Record<string, { rows: { row: number; question: string; text: string; gold: string | boolean; before: string | boolean | null; before_p: number | null; after: string | boolean | null; after_p: number | null }[] }> = {};
+
+/** Before/after answers for a fine-tune's calibration rows, from the demo tickets. */
+function mockAnalysis(f: FineTune, stage: "before" | "after") {
+  const rows = demoRows.slice(0, 60);
+  const prev = analyses[f.id]?.rows ?? [];
+  const out = rows.flatMap((r, i) => {
+    const text = `${r.subject}: ${r.body}`.slice(0, 400);
+    const d = { row: i, question: "department", text, gold: r.department as string | boolean };
+    const p = { row: i, question: "priority", text, gold: r.priority === "high" };
+    return [d, p].map((x) => {
+      const old = prev.find((o) => o.row === x.row && o.question === x.question);
+      const labels = x.question === "department" ? departments : [true, false];
+      const guess = (skill: number) => (rand() < skill ? x.gold : labels.filter((l) => l !== x.gold)[Math.floor(rand() * (labels.length - 1))]);
+      const before = old?.before ?? guess(x.question === "department" ? 0.68 : 0.75);
+      const before_p = old?.before_p ?? 0.35 + rand() * 0.5;
+      const after = stage === "after" ? (before === x.gold ? (rand() < 0.97 ? x.gold : guess(0)) : guess(0.8)) : null;
+      const after_p = stage === "after" ? (after === x.gold ? 0.7 + rand() * 0.29 : 0.4 + rand() * 0.4) : null;
+      return { ...x, before, before_p, after, after_p };
+    });
+  });
+  analyses[f.id] = { rows: out };
+  f.has_analysis = true;
+}
+const ftSlug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "model";
+
+/** The held-out rows of a fine-tune as their own dataset, like the app keeps them. */
+function heldOutDataset(f: FineTune, n: number): string {
+  const id = `ds-heldout-${f.id}`;
+  rowsByDataset[id] = demoRows.slice(demoRows.length - n);
+  datasets.push({ id, name: `support_tickets · held out for ${f.name}`, source: `fine-tune ${f.model}`, columns: ["id", "subject", "body", "department", "priority"], row_count: n, created_at: new Date().toISOString() } as Dataset);
+  f.test_dataset_id = id;
+  return id;
+}
+
+function addFineTuneModel(f: FineTune) {
+  if (!installed.some((m) => m.name === f.model)) installed.push({ name: f.model, modified_at: new Date().toISOString(), size: f.size_bytes, details: { format: "gguf", family: "fine-tune", parameter_size: fineTuneBases.find((b) => b.id === f.base)?.params ?? "", quantization_level: "Q8_0" } });
+}
+
+function newFineTune(input: { name: string; base: string; config: ExperimentConfig; source_experiment_id?: string | null; settings: FineTune["settings"] }): FineTune {
+  const e = input.source_experiment_id ? experiments.find((x) => x.id === input.source_experiment_id) : undefined;
+  const ds = datasets.find((d) => d.id === input.config.dataset_id)!;
+  const b = fineTuneBases.find((x) => x.id === input.base)!;
+  const name = input.name.trim() || `${ds.name} · ${b.title}`;
+  return {
+    id: `ft-${fineTunes.length + 1}-${Date.now() % 1e5}`, name, model: `ft:${ftSlug(name)}`, base: b.id, base_title: b.title,
+    experiment_id: e?.id ?? null, experiment_name: e?.name ?? null, config: input.config, dataset_id: ds.id, dataset_name: ds.name, questions: input.config.tasks.map((t) => t.id),
+    settings: input.settings, status: "queued", progress: { stage: null, step: 0, total_steps: 0, epoch: 0, elapsed_s: 0, loss: [], batch_size: 0, records: 0 },
+    split: null, before: null, after: null, eval_experiment_id: null, test_dataset_id: null, size_bytes: 0, train_seconds: null,
+    parameters: null, trainable_parameters: null, has_analysis: false, error: null,
+    created_at: new Date().toISOString(), started_at: null, finished_at: null,
+  };
+}
+
+function fineTuneSplit(config: ExperimentConfig, holdout: number) {
+  const rows = rowsByDataset[config.dataset_id] ?? [];
+  const labelled = rows.filter((r) => config.tasks.some((t) => gtOf(r, t) !== null)).length;
+  const test = Math.round(labelled * holdout);
+  const calibration = Math.min(300, Math.max(20, Math.round((labelled - test) * 0.1)));
+  return { labelled, train: labelled - test - calibration, calibration, test, records: labelled - test - calibration };
+}
+
+const lossAt = (i: number, n: number) => 1.5 * Math.exp((-4 * i) / n) + 0.22 + 0.06 * Math.sin(i * 1.3) * Math.exp(-i / n);
+
+async function runFineTune(f: FineTune) {
+  const up = (patch: Partial<FineTune>) => {
+    Object.assign(f, patch);
+    emit("finetune://progress", JSON.parse(JSON.stringify(f)));
+  };
+  const cancelled = () => f.status === "cancelled";
+  up({ status: "preparing", started_at: new Date().toISOString(), split: fineTuneSplit(f.config!, f.settings.holdout) });
+  await sleep(700);
+  // The comparison models answer the held-out rows first; the fine-tune joins them afterwards.
+  const compare = f.config!.models;
+  let evalId: string | null = null;
+  if (compare.length) {
+    evalId = seedExperiment(`${f.name}: held-out test`, compare, f.split?.test ?? 30, heldOutDataset(f, f.split?.test ?? 30));
+    up({ status: "baseline", eval_experiment_id: evalId });
+    await sleep(1800);
+  }
+  // Loading: the base model downloads the first time (~842 MB here), byte by byte.
+  up({ status: "training", progress: { ...f.progress, stage: "loading", download: null } });
+  await sleep(700);
+  const size = 842_609_210;
+  for (let t = 0; t <= 24; t++) {
+    if (cancelled()) return;
+    const done = Math.min(size, Math.round(size * (t / 24) ** 1.1));
+    up({ progress: { ...f.progress, download: { done, total: size, files_done: Math.min(5, Math.floor((t / 24) * 5) + (t > 0 ? 1 : 0)), files: 5, cached: 0, elapsed_s: t * 0.4, error: null } } });
+    await sleep(250);
+  }
+  await sleep(600);
+  if (cancelled()) return;
+  up({ progress: { ...f.progress, stage: "baseline" } });
+  await sleep(1200);
+  mockAnalysis(f, "before");
+  up({ before: { accuracy: 0.63, ece: 0.19 } });
+  const records = f.split?.train ?? 100;
+  const total = Math.max(40, Math.ceil((records * f.settings.epochs) / 8));
+  up({ parameters: 428_226_561, trainable_parameters: 33_444_865, progress: { ...f.progress, stage: "training", batch_size: 8, records } });
+  for (let step = 0; step <= total; step++) {
+    if (cancelled()) return;
+    const loss = step % 5 === 0 && step > 0 ? [...f.progress.loss, [step, lossAt(step, total)] as [number, number]] : f.progress.loss;
+    up({ progress: { ...f.progress, stage: "training", step, total_steps: total, epoch: (step / total) * f.settings.epochs, elapsed_s: step * 0.9, loss } });
+    await sleep(160);
+  }
+  for (const stage of ["calibrating", "exporting"]) {
+    if (cancelled()) return;
+    up({ progress: { ...f.progress, stage } });
+    await sleep(1000);
+  }
+  mockAnalysis(f, "after");
+  up({ after: { accuracy: 0.84, ece: 0.05 }, size_bytes: 449_396_288, train_seconds: total * 0.9 });
+  skill[f.model] = 0.95;
+  speed[f.model] = 110;
+  addFineTuneModel(f);
+  if (evalId) {
+    const e = experiments.find((x) => x.id === evalId)!;
+    e.config.models.unshift(f.model);
+    e.row_indices.forEach((i) => predictRow(evalId!, e, f.model, i));
+    e.progress[f.model] = e.row_indices.length;
+  } else {
+    evalId = seedExperiment(`${f.name}: held-out test`, [f.model], f.split?.test ?? 30, heldOutDataset(f, f.split?.test ?? 30));
+  }
+  up({ status: "evaluating", progress: { ...f.progress, stage: null }, eval_experiment_id: evalId });
+  await sleep(1500);
+  up({ status: "ready", finished_at: new Date().toISOString() });
+}
+
+// A finished fine-tune to look at.
+if (!fresh) {
+  const f = newFineTune({ name: "Ticket routing · Laya English", base: "laya-en", config: { ...experiments.find((x) => x.id === "exp-2")!.config, models: ["laya:en", "nli"] }, source_experiment_id: "exp-2", settings: { epochs: 2, learning_rate: 1e-4, lora_rank: 16, holdout: 0.2, max_length: 512, seed: 7 } });
+  skill[f.model] = 0.95;
+  speed[f.model] = 110;
+  Object.assign(f, {
+    status: "ready", split: fineTuneSplit(experiments.find((x) => x.id === "exp-2")!.config, 0.2), before: { accuracy: 0.71, ece: 0.16 }, after: { accuracy: 0.92, ece: 0.04 }, size_bytes: 449_396_288, train_seconds: 211,
+    parameters: 428_226_561, trainable_parameters: 33_444_865,
+    progress: { stage: null, step: 28, total_steps: 28, epoch: 2, elapsed_s: 211, batch_size: 8, records: 108, loss: Array.from({ length: 28 }, (_, i) => [i + 1, lossAt(i + 1, 28) + (rand() - 0.5) * 0.12]) },
+    created_at: new Date(Date.now() - 86400e3).toISOString(), started_at: new Date(Date.now() - 86400e3).toISOString(), finished_at: new Date(Date.now() - 86000e3).toISOString(),
+  });
+  addFineTuneModel(f);
+  mockAnalysis(f, "before");
+  mockAnalysis(f, "after");
+  f.eval_experiment_id = seedExperiment(`${f.name}: held-out test`, [f.model, "laya:en", "nli"], 120, heldOutDataset(f, 120));
+  fineTunes.push(f);
+}
+
+async function fineTuneCommand(cmd: string, args: Record<string, any>): Promise<unknown> {
+  switch (cmd) {
+    case "finetune_bases": return fineTuneBases;
+    case "trainer_status": return { ...trainer };
+    case "trainer_install": {
+      const lines = ["Downloading uv 0.11.2…", "Creating the Python environment (Python 3.12)…", "Using CPython 3.12.7", "Installing PyTorch, MLX and Unsloth…", "Resolved 74 packages in 2.1s", "Downloaded torch", "Downloaded mlx", "Installed 74 packages in 8.4s", "Downloading llama.cpp b11559…", "  12 of 12 MB", "Checking the installation…", "ok", "version: 11559 (b11559)", "The trainer is ready."];
+      for (const l of lines) {
+        await sleep(450);
+        emit("finetune://install-log", l);
+      }
+      Object.assign(trainer, { installed: true, size_bytes: 1.5e9 });
+      return { ...trainer };
+    }
+    case "trainer_uninstall": Object.assign(trainer, { installed: false, size_bytes: 0 }); return { ...trainer };
+    case "finetune_list": return JSON.parse(JSON.stringify(fineTunes));
+    case "finetune_get": { const f = fineTunes.find((x) => x.id === args.id); if (!f) throw { code: "NOT_FOUND", message: `fine-tune ${args.id} not found` }; return JSON.parse(JSON.stringify(f)); }
+    case "finetune_preview": {
+      const c: ExperimentConfig = args.config;
+      const rows = rowsByDataset[c.dataset_id] ?? [];
+      const split = fineTuneSplit(c, args.holdout);
+      const questions = c.tasks.map((t) => {
+        const labels: Record<string, number> = Object.fromEntries(t.labels.map((l) => [l.value, 0]));
+        rows.forEach((r) => { const g = gtOf(r, t); if (g !== null) labels[g] += 1; });
+        return { id: t.id, instructions: t.instructions, kind: t.kind, labels };
+      });
+      const warnings = split.train < 200 ? [`${split.train} training rows is few; results get more reliable from about 300.`] : [];
+      if (split.test < 30) warnings.push(`Only ${split.test} rows are held out, so the before/after comparison will be rough.`);
+      const errors = fineTunes.some((f) => f.test_dataset_id === c.dataset_id) ? ["This dataset holds another fine-tune's held-out rows."] : [];
+      return { split, questions, errors, warnings, compare_with: c.models };
+    }
+    case "finetune_create": {
+      const f = newFineTune(args.input);
+      fineTunes.unshift(f);
+      emit("finetune://progress", JSON.parse(JSON.stringify(f)));
+      void runFineTune(f);
+      return JSON.parse(JSON.stringify(f));
+    }
+    case "finetune_cancel": { const f = fineTunes.find((x) => x.id === args.id); if (f && !["ready", "failed", "cancelled"].includes(f.status)) { f.status = "cancelled"; f.finished_at = new Date().toISOString(); emit("finetune://progress", JSON.parse(JSON.stringify(f))); } return undefined; }
+    case "finetune_delete": {
+      const i = fineTunes.findIndex((x) => x.id === args.id);
+      if (i >= 0) { const m = fineTunes[i].model; fineTunes.splice(i, 1); const j = installed.findIndex((x) => x.name === m); if (j >= 0) installed.splice(j, 1); }
+      return undefined;
+    }
+    case "finetune_log": return "Unsloth: Fast decision model patching. Device: Apple M2 Max (MLX).\nUnsloth: training 2 epochs over 1600 records…\n{'loss': 0.4123, 'epoch': 1.0}\n{'loss': 0.2311, 'epoch': 2.0}";
+    case "finetune_analysis": return analyses[args.id] ?? { rows: [] };
+    case "finetune_folder": return `~/Library/Application Support/dev.classifai.app/finetunes/jobs/${args.id}`;
+  }
+  return null;
+}
+
 export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Promise<T> {
   await sleep(60);
   const r = (v: unknown) => v as T;
+  if (cmd.startsWith("finetune_") || cmd.startsWith("trainer_")) return (await fineTuneCommand(cmd, args)) as T;
   switch (cmd) {
     case "app_info": return r({ version: "0.1.0", data_dir: "~/Library/Application Support/dev.classifai.app" });
     case "engine_status": return r({ ...engine });
@@ -412,7 +624,7 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
       emit("model://pull", { model: args.model, status: "success", completed: total, total, done: true, error: null });
       return r(undefined);
     }
-    case "model_delete": { const i = installed.findIndex((m) => m.name === args.model); if (i >= 0) installed.splice(i, 1); return r(undefined); }
+    case "model_delete": { if (args.model.startsWith("ft:")) { const f = fineTunes.find((x) => x.model === args.model); if (f) return invoke("finetune_delete", { id: f.id }); } const i = installed.findIndex((m) => m.name === args.model); if (i >= 0) installed.splice(i, 1); return r(undefined); }
     case "providers_list": return r(JSON.parse(JSON.stringify(providers)));
     case "provider_save": {
       const inp = args.input;
