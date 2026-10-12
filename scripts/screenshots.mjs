@@ -172,6 +172,15 @@ async function main() {
         h.click("department"); await h.sleep(1500);`);
       await shot("evaluation");
     },
+    // A finished fine-tune: what it learned (per label, confidence, rows).
+    async finetune() {
+      await open();
+      await run(`[...document.querySelectorAll("nav button")].find((b) => b.textContent.trim() === "Fine-tune").click(); await h.sleep(900);
+        [...document.querySelectorAll("tbody tr")].find((r) => /Ticket routing/.test(r.textContent)).click(); await h.sleep(2500);
+        const learned = [...document.querySelectorAll("h2")].find((e) => e.textContent.includes("What it learned"));
+        document.getElementById("main-scroll")?.scrollBy({ top: learned ? learned.getBoundingClientRect().top - 90 : 0 }); await h.sleep(800);`);
+      await shot("finetune");
+    },
     // Providers: decision models and LLMs.
     async models() {
       await open();

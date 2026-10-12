@@ -28,7 +28,7 @@ ClassifAI Studio works with two kinds of models and treats them the same way:
 
 ## What it does
 
-**Playground.** Paste one entry, or open a row of a dataset, and ask the same questions of several models at once. Answers show the full distribution, how sure the model is, and whether the models agree. "Why this answer?" removes parts of the input one at a time to see what a decision model relied on, and shows the quoted passage for an LLM.
+**Playground.** Paste one entry, or open a row of a dataset, and ask the same questions of several models at once. Answers show the full distribution, how sure the model is, and whether the models agree. A row opened from an evaluation or a fine-tune comes with its questions and its ground truth, and each answer is marked right or wrong; the arrow keys move to the next row. "Why this answer?" removes parts of the input one at a time to see what a decision model relied on, and shows the quoted passage for an LLM.
 
 **Questions.** Pick one, pick any, yes/no, scale, rank, number and free text. Each question can have its own context and option descriptions. A question can have follow-ups that are only asked for certain answers ("if No, ask why"); models answer them in a second pass with the earlier answers added to the input. Question sets are versioned and can be imported from JSON, CSV or JSON Schema.
 
@@ -42,7 +42,13 @@ ClassifAI Studio works with two kinds of models and treats them the same way:
 
 **Bulk.** Answer the same questions for many entries with one model and save the answers as a dataset or CSV.
 
-**Fine-tuning.** Train a decision model on the labels of an evaluation, on your Mac's GPU. Pick a base (Laya English or multilingual, Clef, or a Qwen3.5 language model that gets a new decision head); most labelled rows train it, some calibrate its confidence, and a held-out share tests it against the models you started from. The result is a model like any other (`ft:<name>`) in the Playground, Bulk and evaluations. Training uses [Unsloth](https://github.com/unslothai/unsloth) with Apple's MLX and the models run in [llama.cpp](https://github.com/ggml-org/llama.cpp); both are installed on request into the app's own folder (about 1.5 GB) and run as separate processes. Unsloth's decision-model code is AGPL-3.0 and is not part of ClassifAI Studio. Apple silicon and macOS 14 or later.
+**Fine-tuning.** Train a decision model on your own labels, on your Mac's GPU. Set it up like an evaluation (dataset, input columns, questions and their label columns, or copied from an evaluation), pick a base model (Laya English or multilingual, Clef Flash, or a Qwen3.5 language model that gets a new decision head) and the models to compare against. ClassifAI then sets aside held-out rows, lets the comparison models answer them, trains on the rest, calibrates the confidence, and adds the fine-tune to the same evaluation, so you read before and after in one leaderboard. While it runs you see each stage explained, the base model's download, the loss curve and live numbers; afterwards, which rows and labels it learned. The result is a model like any other (`ft:<name>`) in the Playground, Bulk and evaluations.
+
+Training uses [Unsloth](https://github.com/unslothai/unsloth) with Apple's MLX and the models run in [llama.cpp](https://github.com/ggml-org/llama.cpp); both are installed on request into the app's own folder (about 1.5 GB) and run as separate processes. Unsloth's decision-model code is AGPL-3.0 and is not part of ClassifAI Studio. Apple silicon and macOS 14 or later.
+
+![What a fine-tune learned: accuracy before and after, per label, calibration, and the rows it now gets right](docs/screenshots/finetune.png)
+
+**Guide.** An in-app guide explains decision models, evaluations and fine-tuning, from the train / calibrate / test split to LoRA, calibration and how to read the results, with a glossary.
 
 **Data.** Import CSV, TSV, JSON and JSONL, Excel and OpenDocument workbooks, datasets from the Hugging Face Hub (with sampling and filters), and folders of Word documents, PDFs, text files and images.
 

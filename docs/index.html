@@ -191,6 +191,15 @@
 
         <div class="feature">
           <div class="text">
+            <h2>Fine-tune a model on your own labels</h2>
+            <p>Turn your labels into a model of your own, trained on your Mac's GPU. Set it up like an evaluation, pick a base model, and ClassifAI holds back rows for the test, measures the models you compare against, trains, calibrates, and puts the fine-tune next to them in one leaderboard.</p>
+            <p>You see each step explained while it runs, and afterwards what it learned: per label, how far to trust its confidence, and the rows it now gets right. The result works everywhere in the app like any other model, and stays on your Mac.</p>
+          </div>
+          <img class="shot" src="screenshots/finetune.png" width="2880" height="1800" loading="lazy" alt="A fine-tune's results: accuracy before and after, gains per label, a calibration chart and example rows it learned">
+        </div>
+
+        <div class="feature flip">
+          <div class="text">
             <h2>Use the providers you already have</h2>
             <p>Connect hosted decision APIs and LLM providers next to your local models. Search a provider's model list to add a model, and its published prices are filled in. You see what each model costs per entry and can set a monthly budget. API keys stay in the macOS Keychain.</p>
           </div>
@@ -227,6 +236,14 @@
           <div class="card">
             <h3>Reports and a CLI</h3>
             <p class="muted">Export an evaluation as Markdown or HTML. The <code>classifai</code> command line works on the same data as the app.</p>
+          </div>
+          <div class="card">
+            <h3>Answers against the truth</h3>
+            <p class="muted">Open a row from an evaluation or a fine-tune in the Playground: its questions and ground truth come along, and each answer is marked right or wrong.</p>
+          </div>
+          <div class="card">
+            <h3>A guide in the app</h3>
+            <p class="muted">What decision models, evaluations and fine-tuning are and how to read the numbers, from the data split to LoRA and calibration, with a glossary.</p>
           </div>
         </div>
       </div>
